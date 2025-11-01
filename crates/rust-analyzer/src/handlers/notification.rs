@@ -5,16 +5,15 @@ use std::{ops::Deref, panic::UnwindSafe};
 
 use itertools::Itertools;
 use lsp_types::{
-    CancelParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
-    DidChangeWatchedFilesParams, DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, WorkDoneProgressCancelParams,
+    CancelParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, WorkDoneProgressCancelParams,
 };
 use paths::Utf8PathBuf;
 use triomphe::Arc;
 use vfs::{AbsPathBuf, ChangeKind, VfsPath};
 
 use crate::{
-    config::{Config, ConfigChange},
     flycheck::{InvocationStrategy, Target},
     global_state::{FetchWorkspaceRequest, GlobalState},
     lsp::{from_proto, utils::apply_document_changes},
@@ -192,49 +191,6 @@ pub(crate) fn handle_did_save_text_document(
     Ok(())
 }
 
-pub(crate) fn handle_did_change_configuration(
-    state: &mut GlobalState,
-    _params: DidChangeConfigurationParams,
-) -> anyhow::Result<()> {
-    // As stated in https://github.com/microsoft/language-server-protocol/issues/676,
-    // this notification's parameters should be ignored and the actual config queried separately.
-    state.send_request::<lsp_types::request::WorkspaceConfiguration>(
-        lsp_types::ConfigurationParams {
-            items: vec![lsp_types::ConfigurationItem {
-                scope_uri: None,
-                section: Some("rust-analyzer".to_owned()),
-            }],
-        },
-        |this, resp| {
-            tracing::debug!("config update response: '{:?}", resp);
-            let lsp_server::Response { error, result, .. } = resp;
-
-            match (error, result) {
-                (Some(err), _) => {
-                    tracing::error!("failed to fetch the server settings: {:?}", err)
-                }
-                (None, Some(mut configs)) => {
-                    if let Some(json) = configs.get_mut(0) {
-                        let config = Config::clone(&*this.config);
-                        let mut change = ConfigChange::default();
-                        change.change_client_config(json.take());
-
-                        let (config, _) = config.apply_change(change);
-
-                        // Client config changes necessitates .update_config method to be called.
-                        this.update_configuration(config);
-                    }
-                }
-                (None, None) => {
-                    tracing::error!("received empty server settings response from the client")
-                }
-            }
-        },
-    );
-
-    Ok(())
-}
-
 pub(crate) fn handle_did_change_workspace_folders(
     state: &mut GlobalState,
     params: DidChangeWorkspaceFoldersParams,
@@ -257,12 +213,10 @@ pub(crate) fn handle_did_change_workspace_folders(
         .filter_map(|it| AbsPathBuf::try_from(it).ok());
     config.add_workspaces(added);
 
-    if !config.has_linked_projects() && config.detached_files().is_empty() {
-        config.rediscover_workspaces();
+    config.rediscover_workspaces();
 
-        let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
-        state.fetch_workspaces_queue.request_op("client workspaces changed".to_owned(), req);
-    }
+    let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
+    state.fetch_workspaces_queue.request_op("client workspaces changed".to_owned(), req);
 
     Ok(())
 }

@@ -15,7 +15,6 @@ use vfs::FileId;
 
 use crate::{
     cli::flags,
-    config::ConfigChange,
     line_index::{LineEndings, LineIndex, PositionEncoding},
 };
 
@@ -28,21 +27,13 @@ impl flags::Scip {
         let root =
             vfs::AbsPathBuf::assert_utf8(std::env::current_dir()?.join(&self.path)).normalize();
 
-        let mut config = crate::config::Config::new(
+        let config = crate::config::Config::new(
             root.clone(),
             lsp_types::ClientCapabilities::default(),
             vec![],
             None,
         );
 
-        if let Some(p) = self.config_path {
-            let mut file = std::io::BufReader::new(std::fs::File::open(p)?);
-            let json = serde_json::from_reader(&mut file)?;
-            let mut change = ConfigChange::default();
-            change.change_client_config(json);
-
-            (config, _) = config.apply_change(change);
-        }
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
             with_proc_macro_server: ProcMacroServerChoice::Sysroot,

@@ -179,9 +179,6 @@ xflags::xflags! {
             /// The output path where the SCIP file will be written to. Defaults to `index.scip`.
             optional --output path: PathBuf
 
-            /// A path to an json configuration file that can be used to customize cargo behavior.
-            optional --config-path config_path: PathBuf
-
             /// Exclude code from vendored libraries from the resulting index.
             optional --exclude-vendored-libraries
         }
@@ -326,7 +323,6 @@ pub struct Scip {
     pub path: PathBuf,
 
     pub output: Option<PathBuf>,
-    pub config_path: Option<PathBuf>,
     pub exclude_vendored_libraries: bool,
 }
 

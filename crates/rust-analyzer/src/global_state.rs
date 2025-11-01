@@ -11,7 +11,7 @@ use std::{
 use cargo_metadata::PackageId;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use hir::ChangeWithProcMacros;
-use ide::{Analysis, AnalysisHost, Cancellable, FileId, SourceRootId};
+use ide::{Analysis, AnalysisHost, Cancellable, FileId};
 use ide_db::{
     MiniCore,
     base_db::{Crate, ProcMacroPaths},
@@ -31,7 +31,7 @@ use triomphe::Arc;
 use vfs::{AbsPathBuf, AnchoredPathBuf, Vfs, VfsPath};
 
 use crate::{
-    config::{Config, ConfigChange},
+    config::Config,
     diagnostics::{CheckFixes, DiagnosticCollection},
     discover,
     flycheck::{FlycheckHandle, FlycheckMessage},
@@ -93,8 +93,6 @@ pub(crate) struct GlobalState {
     pub(crate) diagnostics: DiagnosticCollection,
     pub(crate) mem_docs: MemDocs,
     pub(crate) source_root_config: SourceRootConfig,
-    /// A mapping that maps a local source root's `SourceRootId` to it parent's `SourceRootId`, if it has one.
-    pub(crate) local_roots_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
     pub(crate) semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
 
     // status
@@ -271,7 +269,6 @@ impl GlobalState {
                 message: None,
             },
             source_root_config: SourceRootConfig::default(),
-            local_roots_parent_map: Arc::new(FxHashMap::default()),
 
             proc_macro_clients: Arc::from_iter([]),
 
@@ -420,24 +417,6 @@ impl GlobalState {
             });
 
         self.analysis_host.apply_change(change);
-        if !self.config.same_source_root_parent_map(&self.local_roots_parent_map) {
-            let config_change = {
-                let _p = span!(Level::INFO, "GlobalState::process_changes/config_change").entered();
-
-                let mut change = ConfigChange::default();
-                change.change_source_root_parent_map(self.local_roots_parent_map.clone());
-                change
-            };
-
-            let (config, should_update) = self.config.apply_change(config_change);
-
-            if should_update {
-                self.update_configuration(config);
-            } else {
-                // No global or client level config was changed. So we can naively replace config.
-                self.config = Arc::new(config);
-            }
-        }
 
         // FIXME: `workspace_structure_change` is computed from `should_refresh_for_change` which is
         // path syntax based. That is not sufficient for all cases so we should lift that check out

@@ -15,11 +15,7 @@ use std::{env, fs, path::PathBuf, process::ExitCode, sync::Arc};
 use anyhow::Context;
 use lsp_server::Connection;
 use paths::Utf8PathBuf;
-use rust_analyzer::{
-    cli::flags,
-    config::{Config, ConfigChange},
-    from_json,
-};
+use rust_analyzer::{cli::flags, config::Config, from_json};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use vfs::AbsPathBuf;
 
@@ -206,7 +202,6 @@ fn run_server() -> anyhow::Result<()> {
         root_uri,
         mut capabilities,
         workspace_folders,
-        initialization_options,
         client_info,
         ..
     } = from_json::<lsp_types::InitializeParams>("InitializeParams", &initialize_params)?;
@@ -255,13 +250,7 @@ fn run_server() -> anyhow::Result<()> {
         })
         .filter(|workspaces| !workspaces.is_empty())
         .unwrap_or_else(|| vec![root_path.clone()]);
-    let mut config = Config::new(root_path, capabilities, workspace_roots, client_info);
-    if let Some(json) = initialization_options {
-        let mut change = ConfigChange::default();
-        change.change_client_config(json);
-
-        (config, _) = config.apply_change(change);
-    }
+    let config = Config::new(root_path, capabilities, workspace_roots, client_info);
 
     let server_capabilities = rust_analyzer::server_capabilities(&config);
 
@@ -281,13 +270,6 @@ fn run_server() -> anyhow::Result<()> {
             io_threads.join()?;
         }
         return Err(e.into());
-    }
-
-    if config.discover_workspace_config().is_none()
-        && !config.has_linked_projects()
-        && config.detached_files().is_empty()
-    {
-        config.rediscover_workspaces();
     }
 
     // If the io_threads have an error, there's usually an error on the main

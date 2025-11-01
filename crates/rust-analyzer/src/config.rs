@@ -12,7 +12,7 @@ use ide::{
     CompletionFieldsToResolve, DiagnosticsConfig, GenericParameterHints, GotoDefinitionConfig,
     GotoImplementationConfig, HighlightConfig, HighlightRelatedConfig, HoverConfig, HoverDocFormat,
     InlayFieldsToResolve, InlayHintsConfig, JoinLinesConfig, MemoryLayoutHoverConfig,
-    MemoryLayoutHoverRenderKind, RenameConfig, Snippet, SnippetScope, SourceRootId,
+    MemoryLayoutHoverRenderKind, RenameConfig, Snippet, SourceRootId,
 };
 use ide_db::{
     MiniCore, SnippetCap,
@@ -28,7 +28,6 @@ use project_model::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use triomphe::Arc;
 use vfs::{AbsPath, AbsPathBuf};
 
 use crate::{
@@ -37,10 +36,6 @@ use crate::{
     lsp::capabilities::ClientCapabilities,
     lsp_ext::{WorkspaceSymbolSearchKind, WorkspaceSymbolSearchScope},
 };
-
-type FxIndexMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
-
-mod patch_old_style;
 
 // Conventions for configuration keys to preserve maximal extendability without breakage:
 //  - Toggles (be it binary true/false or with more options in-between) should almost always suffix as `_enable`
@@ -82,10 +77,6 @@ config_data! {
         /// How many worker threads to handle priming caches. The default `0` means to pick
         /// automatically.
         cachePriming_numThreads: NumThreads = NumThreads::Physical,
-
-        /// Custom completion snippets.
-        completion_snippets_custom: FxIndexMap<String, SnippetDef> =
-            Config::completion_snippets_default(),
 
         /// If this is `true`, when "Goto Implementations" and in "Implementations" lens, are triggered on a `struct` or `enum` or `union`, we filter out trait implementations that originate from `derive`s above the type.
         gotoImplementations_filterAdjacentDerives: bool = false,
@@ -963,11 +954,6 @@ pub struct Config {
     client_info: Option<ClientInfo>,
 
     default_config: &'static DefaultConfigData,
-
-    /// Clone of the value that is stored inside a `GlobalState`.
-    source_root_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
-
-    detached_files: Vec<AbsPathBuf>,
 }
 
 impl fmt::Debug for Config {
@@ -980,8 +966,6 @@ impl fmt::Debug for Config {
             .field("root_path", &self.root_path)
             .field("snippets", &self.snippets)
             .field("client_info", &self.client_info)
-            .field("source_root_parent_map", &self.source_root_parent_map)
-            .field("detached_files", &self.detached_files)
             .finish()
     }
 }
@@ -996,84 +980,6 @@ impl std::ops::Deref for Config {
 }
 
 impl Config {
-    pub fn same_source_root_parent_map(
-        &self,
-        other: &Arc<FxHashMap<SourceRootId, SourceRootId>>,
-    ) -> bool {
-        Arc::ptr_eq(&self.source_root_parent_map, other)
-    }
-
-    // FIXME @alibektas : Server's health uses error sink but in other places it is not used atm.
-    /// Changes made to client and global configurations will partially not be reflected even after `.apply_change()` was called.
-    /// The return tuple's bool component signals whether the `GlobalState` should call its `update_configuration()` method.
-    fn apply_change_with_sink(&self, change: ConfigChange) -> (Config, bool) {
-        let mut config = self.clone();
-        let mut should_update = false;
-
-        if let Some(mut json) = change.client_config_change {
-            tracing::info!("updating config from JSON: {:#}", json);
-
-            if !(json.is_null() || json.as_object().is_some_and(|it| it.is_empty())) {
-                let detached_files = get_field_json::<Vec<Utf8PathBuf>>(
-                    &mut json,
-                    &mut Vec::new(),
-                    "detachedFiles",
-                    None,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .map(AbsPathBuf::assert)
-                .collect();
-
-                patch_old_style::patch_json_for_outdated_configs(&mut json);
-
-                // IMPORTANT : This holds as long as ` completion_snippets_custom` is declared `client`.
-                config.snippets.clear();
-
-                let snips = &self.default_config.global.completion_snippets_custom;
-                #[allow(dead_code)]
-                let _ = Self::completion_snippets_custom;
-                for (name, def) in snips.iter() {
-                    if def.prefix.is_empty() && def.postfix.is_empty() {
-                        continue;
-                    }
-                    let scope = match def.scope {
-                        SnippetScopeDef::Expr => SnippetScope::Expr,
-                        SnippetScopeDef::Type => SnippetScope::Type,
-                        SnippetScopeDef::Item => SnippetScope::Item,
-                    };
-                    match Snippet::new(
-                        &def.prefix,
-                        &def.postfix,
-                        &def.body,
-                        def.description.as_ref().unwrap_or(name),
-                        &def.requires,
-                        scope,
-                    ) {
-                        Some(snippet) => config.snippets.push(snippet),
-                        None => unreachable!("default snippets are valid"),
-                    }
-                }
-
-                config.detached_files = detached_files;
-            }
-            should_update = true;
-        }
-
-        if let Some(source_root_map) = change.source_map_change {
-            config.source_root_parent_map = source_root_map;
-        }
-
-        (config, should_update)
-    }
-
-    /// Given `change` this generates a new `Config`, thereby collecting errors of type `ConfigError`.
-    /// If there are changes that have global/client level effect, the last component of the return type
-    /// will be set to `true`, which should be used by the `GlobalState` to update itself.
-    pub fn apply_change(&self, change: ConfigChange) -> (Config, bool) {
-        self.apply_change_with_sink(change)
-    }
-
     pub fn add_discovered_project_from_command(
         &mut self,
         data: ProjectJsonData,
@@ -1087,26 +993,6 @@ impl Config {
         }
 
         self.discovered_projects_from_command.push(ProjectJsonFromCommand { data, buildfile });
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct ConfigChange {
-    client_config_change: Option<serde_json::Value>,
-    source_map_change: Option<Arc<FxHashMap<SourceRootId, SourceRootId>>>,
-}
-
-impl ConfigChange {
-    pub fn change_client_config(&mut self, change: serde_json::Value) {
-        self.client_config_change = Some(change);
-    }
-
-    pub fn change_source_root_parent_map(
-        &mut self,
-        source_root_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
-    ) {
-        assert!(self.source_map_change.is_none());
-        self.source_map_change = Some(source_root_map);
     }
 }
 
@@ -1324,7 +1210,7 @@ impl Config {
     ) -> Self {
         static DEFAULT_CONFIG_DATA: OnceLock<&'static DefaultConfigData> = OnceLock::new();
 
-        Config {
+        let mut this = Config {
             caps: ClientCapabilities::new(caps),
             discovered_projects_from_filesystem: Vec::new(),
             discovered_projects_from_command: Vec::new(),
@@ -1336,9 +1222,9 @@ impl Config {
                 version: it.version.as_deref().map(Version::parse).and_then(Result::ok),
             }),
             default_config: DEFAULT_CONFIG_DATA.get_or_init(|| Box::leak(Box::default())),
-            source_root_parent_map: Arc::new(FxHashMap::default()),
-            detached_files: Default::default(),
-        }
+        };
+        this.rediscover_workspaces();
+        this
     }
 
     pub fn rediscover_workspaces(&mut self) {
@@ -1461,12 +1347,6 @@ impl Config {
 
     pub fn completion_hide_deprecated(&self) -> bool {
         *self.completion_hideDeprecated()
-    }
-
-    pub fn detached_files(&self) -> &Vec<AbsPathBuf> {
-        // FIXME @alibektas : This is the only config that is confusing. If it's a proper configuration
-        // why is it not among the others? If it's client only which I doubt it is current state should be alright
-        &self.detached_files
     }
 
     pub fn diagnostics(&self) -> DiagnosticsConfig {
@@ -1934,53 +1814,6 @@ impl Config {
         *self.cfg_setTest()
     }
 
-    pub(crate) fn completion_snippets_default() -> FxIndexMap<String, SnippetDef> {
-        serde_json::from_str(
-            r#"{
-            "Ok": {
-                "postfix": "ok",
-                "body": "Ok(${receiver})",
-                "description": "Wrap the expression in a `Result::Ok`",
-                "scope": "expr"
-            },
-            "Box::pin": {
-                "postfix": "pinbox",
-                "body": "Box::pin(${receiver})",
-                "requires": "std::boxed::Box",
-                "description": "Put the expression into a pinned `Box`",
-                "scope": "expr"
-            },
-            "Arc::new": {
-                "postfix": "arc",
-                "body": "Arc::new(${receiver})",
-                "requires": "std::sync::Arc",
-                "description": "Put the expression into an `Arc`",
-                "scope": "expr"
-            },
-            "Some": {
-                "postfix": "some",
-                "body": "Some(${receiver})",
-                "description": "Wrap the expression in an `Option::Some`",
-                "scope": "expr"
-            },
-            "Err": {
-                "postfix": "err",
-                "body": "Err(${receiver})",
-                "description": "Wrap the expression in a `Result::Err`",
-                "scope": "expr"
-            },
-            "Rc::new": {
-                "postfix": "rc",
-                "body": "Rc::new(${receiver})",
-                "requires": "std::rc::Rc",
-                "description": "Put the expression into an `Rc`",
-                "scope": "expr"
-            }
-        }"#,
-        )
-        .unwrap()
-    }
-
     pub fn rustfmt(&self) -> RustfmtConfig {
         match &self.rustfmt_overrideCommand() {
             Some(args) if !args.is_empty() => {
@@ -2293,41 +2126,6 @@ macro_rules! create_bool_or_string_serde {
 }
 create_bool_or_string_serde!(true_or_always<true, "always">);
 create_bool_or_string_serde!(false_or_never<false, "never">);
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-enum SnippetScopeDef {
-    #[default]
-    Expr,
-    Item,
-    Type,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(default)]
-pub(crate) struct SnippetDef {
-    #[serde(with = "single_or_array")]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    prefix: Vec<String>,
-
-    #[serde(with = "single_or_array")]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    postfix: Vec<String>,
-
-    #[serde(with = "single_or_array")]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    body: Vec<String>,
-
-    #[serde(with = "single_or_array")]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    requires: Vec<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-
-    scope: SnippetScopeDef,
-}
 
 mod single_or_array {
     use serde::{Deserialize, Serialize};
@@ -2888,118 +2686,3 @@ fn toml_pointer<'a>(toml: &'a toml::Table, pointer: &str) -> Option<&'a toml::Va
 }
 
 type SchemaField = (&'static str, &'static str, &'static [&'static str], String);
-
-#[cfg(test)]
-mod tests {
-    use test_utils::project_root;
-
-    use super::*;
-
-    #[test]
-    fn proc_macro_srv_null() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-
-        let mut change = ConfigChange::default();
-        change.change_client_config(serde_json::json!({
-            "procMacro" : {
-                "server": null,
-        }}));
-
-        (config, _) = config.apply_change(change);
-        assert_eq!(config.proc_macro_srv(), None);
-    }
-
-    #[test]
-    fn proc_macro_srv_abs() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-        let mut change = ConfigChange::default();
-        change.change_client_config(serde_json::json!({
-        "procMacro" : {
-            "server": project_root().to_string(),
-        }}));
-
-        (config, _) = config.apply_change(change);
-        assert_eq!(config.proc_macro_srv(), Some(AbsPathBuf::assert(project_root())));
-    }
-
-    #[test]
-    fn proc_macro_srv_rel() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-
-        let mut change = ConfigChange::default();
-
-        change.change_client_config(serde_json::json!({
-        "procMacro" : {
-            "server": "./server"
-        }}));
-
-        (config, _) = config.apply_change(change);
-
-        assert_eq!(
-            config.proc_macro_srv(),
-            Some(AbsPathBuf::try_from(project_root().join("./server")).unwrap())
-        );
-    }
-
-    #[test]
-    fn cargo_target_dir_unset() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-
-        let mut change = ConfigChange::default();
-
-        change.change_client_config(serde_json::json!({
-            "rust" : { "analyzerTargetDir" : null }
-        }));
-
-        (config, _) = config.apply_change(change);
-        assert_eq!(config.cargo_targetDir(), &None);
-        assert!(
-            matches!(config.flycheck(), FlycheckConfig::CargoCommand { options, .. } if options.target_dir.is_none())
-        );
-    }
-
-    #[test]
-    fn cargo_target_dir_subdir() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-
-        let mut change = ConfigChange::default();
-        change.change_client_config(serde_json::json!({
-            "rust" : { "analyzerTargetDir" : true }
-        }));
-
-        (config, _) = config.apply_change(change);
-
-        assert_eq!(config.cargo_targetDir(), &Some(TargetDirectory::UseSubdirectory(true)));
-        let target =
-            Utf8PathBuf::from(std::env::var("CARGO_TARGET_DIR").unwrap_or("target".to_owned()));
-        assert!(
-            matches!(config.flycheck(), FlycheckConfig::CargoCommand { options, .. } if options.target_dir == Some(target.join("rust-analyzer")))
-        );
-    }
-
-    #[test]
-    fn cargo_target_dir_relative_dir() {
-        let mut config =
-            Config::new(AbsPathBuf::assert(project_root()), Default::default(), vec![], None);
-
-        let mut change = ConfigChange::default();
-        change.change_client_config(serde_json::json!({
-            "rust" : { "analyzerTargetDir" : "other_folder" }
-        }));
-
-        (config, _) = config.apply_change(change);
-
-        assert_eq!(
-            config.cargo_targetDir(),
-            &Some(TargetDirectory::Directory(Utf8PathBuf::from("other_folder")))
-        );
-        assert!(
-            matches!(config.flycheck(), FlycheckConfig::CargoCommand { options, .. } if options.target_dir == Some(Utf8PathBuf::from("other_folder")))
-        );
-    }
-}

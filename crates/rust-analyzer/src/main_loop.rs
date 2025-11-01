@@ -1241,9 +1241,6 @@ impl GlobalState {
             .on_sync_mut::<notifs::DidChangeTextDocument>(handlers::handle_did_change_text_document)
             .on_sync_mut::<notifs::DidCloseTextDocument>(handlers::handle_did_close_text_document)
             .on_sync_mut::<notifs::DidSaveTextDocument>(handlers::handle_did_save_text_document)
-            .on_sync_mut::<notifs::DidChangeConfiguration>(
-                handlers::handle_did_change_configuration,
-            )
             .on_sync_mut::<notifs::DidChangeWorkspaceFolders>(
                 handlers::handle_did_change_workspace_folders,
             )

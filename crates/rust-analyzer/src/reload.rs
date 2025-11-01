@@ -24,7 +24,7 @@ use itertools::Itertools;
 use load_cargo::{ProjectFolders, load_proc_macro};
 use lsp_types::FileSystemWatcher;
 use proc_macro_api::ProcMacroClient;
-use project_model::{ManifestPath, ProjectWorkspace, ProjectWorkspaceKind, WorkspaceBuildScripts};
+use project_model::{ProjectWorkspace, ProjectWorkspaceKind, WorkspaceBuildScripts};
 use stdx::{format_to, thread::ThreadIntent};
 use triomphe::Arc;
 use vfs::{AbsPath, AbsPathBuf, ChangeKind};
@@ -162,9 +162,7 @@ impl GlobalState {
             message.push('\n');
         }
 
-        if self.config.linked_or_discovered_projects().is_empty()
-            && self.config.detached_files().is_empty()
-        {
+        if self.config.linked_or_discovered_projects().is_empty() {
             status.health |= lsp_ext::Health::Warning;
             message.push_str("Failed to discover workspace.\n");
             message.push_str("Consider adding the `Cargo.toml` of the workspace to the [`linkedProjects`](https://rust-analyzer.github.io/book/configuration.html#linkedProjects) setting.\n\n");
@@ -282,14 +280,6 @@ impl GlobalState {
 
         self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, {
             let linked_projects = self.config.linked_or_discovered_projects();
-            let detached_files: Vec<_> = self
-                .config
-                .detached_files()
-                .iter()
-                .cloned()
-                .map(ManifestPath::try_from)
-                .filter_map(Result::ok)
-                .collect();
             let cargo_config = self.config.cargo();
             let discover_command = self.config.discover_workspace_config().cloned();
             let is_quiescent = !(self.discover_workspace_queue.op_in_progress()
@@ -359,13 +349,6 @@ impl GlobalState {
                         });
                     }
                     i += 1;
-                }
-
-                if !detached_files.is_empty() {
-                    workspaces.extend(project_model::ProjectWorkspace::load_detached_files(
-                        detached_files,
-                        &cargo_config,
-                    ));
                 }
 
                 info!(?workspaces, "did fetch workspaces");
@@ -691,7 +674,6 @@ impl GlobalState {
             version: self.vfs_config_version,
         });
         self.source_root_config = project_folders.source_root_config;
-        self.local_roots_parent_map = Arc::new(self.source_root_config.source_root_parent_map());
 
         info!(?cause, "recreating the crate graph");
         self.recreate_crate_graph(cause, switching_from_empty_workspace);
