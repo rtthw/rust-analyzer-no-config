@@ -1024,7 +1024,6 @@ pub(crate) fn handle_runnables(
                 if all_targets {
                     cargo_args.push("--all-targets".to_owned());
                 }
-                cargo_args.extend(config.cargo_extra_args.iter().cloned());
                 res.push(lsp_ext::Runnable {
                     label: format!(
                         "cargo {cmd} -p {}{all_targets}",
@@ -1054,8 +1053,7 @@ pub(crate) fn handle_runnables(
             if !snap.config.linked_or_discovered_projects().is_empty()
                 && let Some(path) = snap.file_id_to_file_path(file_id).parent()
             {
-                let mut cargo_args = vec!["check".to_owned(), "--workspace".to_owned()];
-                cargo_args.extend(config.cargo_extra_args.iter().cloned());
+                let cargo_args = vec!["check".to_owned(), "--workspace".to_owned()];
                 res.push(lsp_ext::Runnable {
                     label: "cargo check --workspace".to_owned(),
                     location: None,
@@ -2361,14 +2359,9 @@ fn run_rustfmt(
     };
 
     let mut command = match snap.config.rustfmt(source_root_id) {
-        RustfmtConfig::Rustfmt { extra_args, enable_range_formatting } => {
+        RustfmtConfig::Rustfmt { enable_range_formatting } => {
             // FIXME: Set RUSTUP_TOOLCHAIN
-            let mut cmd = toolchain::command(
-                toolchain::Tool::Rustfmt.path(),
-                current_dir,
-                snap.config.extra_env(source_root_id),
-            );
-            cmd.args(extra_args);
+            let mut cmd = toolchain::command(toolchain::Tool::Rustfmt.path(), current_dir);
 
             if let Some(edition) = edition {
                 cmd.arg("--edition");
@@ -2409,7 +2402,6 @@ fn run_rustfmt(
         RustfmtConfig::CustomCommand { command, args } => {
             let cmd = Utf8PathBuf::from(&command);
             let target_spec = TargetSpec::for_file(snap, file_id)?;
-            let extra_env = snap.config.extra_env(source_root_id);
             let mut cmd = match target_spec {
                 Some(TargetSpec::Cargo(_)) => {
                     // approach: if the command name contains a path separator, join it with the project root.
@@ -2422,9 +2414,9 @@ fn run_rustfmt(
                     } else {
                         cmd
                     };
-                    toolchain::command(cmd_path, current_dir, extra_env)
+                    toolchain::command(cmd_path, current_dir)
                 }
-                _ => toolchain::command(cmd, current_dir, extra_env),
+                _ => toolchain::command(cmd, current_dir),
             };
 
             cmd.args(args);

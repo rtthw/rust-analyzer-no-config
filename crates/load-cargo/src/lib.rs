@@ -61,18 +61,17 @@ pub fn load_workspace_at(
         workspace.set_build_scripts(build_scripts)
     }
 
-    load_workspace(workspace, &cargo_config.extra_env, load_config)
+    load_workspace(workspace, load_config)
 }
 
 pub fn load_workspace(
     ws: ProjectWorkspace,
-    extra_env: &FxHashMap<String, Option<String>>,
     load_config: &LoadCargoConfig,
 ) -> anyhow::Result<(RootDatabase, vfs::Vfs, Option<ProcMacroClient>)> {
     let lru_cap = std::env::var("RA_LRU_CAP").ok().and_then(|it| it.parse::<u16>().ok());
     let mut db = RootDatabase::new(lru_cap);
 
-    let (vfs, proc_macro_server) = load_workspace_into_db(ws, extra_env, load_config, &mut db)?;
+    let (vfs, proc_macro_server) = load_workspace_into_db(ws, load_config, &mut db)?;
 
     Ok((db, vfs, proc_macro_server))
 }
@@ -82,7 +81,6 @@ pub fn load_workspace(
 // now that `salsa` supports extending foreign databases (e.g. `RootDatabase`).
 pub fn load_workspace_into_db(
     ws: ProjectWorkspace,
-    extra_env: &FxHashMap<String, Option<String>>,
     load_config: &LoadCargoConfig,
     db: &mut RootDatabase,
 ) -> anyhow::Result<(vfs::Vfs, Option<ProcMacroClient>)> {
@@ -96,15 +94,17 @@ pub fn load_workspace_into_db(
     tracing::debug!(?load_config, "LoadCargoConfig");
     let proc_macro_server = match &load_config.with_proc_macro_server {
         ProcMacroServerChoice::Sysroot => ws.find_sysroot_proc_macro_srv().map(|it| {
-            it.and_then(|it| ProcMacroClient::spawn(&it, extra_env).map_err(Into::into)).map_err(
-                |e| ProcMacroLoadingError::ProcMacroSrvError(e.to_string().into_boxed_str()),
-            )
+            it.and_then(|it| {
+                ProcMacroClient::spawn(&it, &FxHashMap::<String, Option<String>>::default())
+                    .map_err(Into::into)
+            })
+            .map_err(|e| ProcMacroLoadingError::ProcMacroSrvError(e.to_string().into_boxed_str()))
         }),
-        ProcMacroServerChoice::Explicit(path) => {
-            Some(ProcMacroClient::spawn(path, extra_env).map_err(|e| {
-                ProcMacroLoadingError::ProcMacroSrvError(e.to_string().into_boxed_str())
-            }))
-        }
+        ProcMacroServerChoice::Explicit(path) => Some(
+            ProcMacroClient::spawn(path, &FxHashMap::<String, Option<String>>::default()).map_err(
+                |e| ProcMacroLoadingError::ProcMacroSrvError(e.to_string().into_boxed_str()),
+            ),
+        ),
         ProcMacroServerChoice::None => Some(Err(ProcMacroLoadingError::Disabled)),
     };
     match &proc_macro_server {
@@ -119,15 +119,12 @@ pub fn load_workspace_into_db(
         }
     }
 
-    let (crate_graph, proc_macros) = ws.to_crate_graph(
-        &mut |path: &AbsPath| {
-            let contents = loader.load_sync(path);
-            let path = vfs::VfsPath::from(path.to_path_buf());
-            vfs.set_file_contents(path.clone(), contents);
-            vfs.file_id(&path)
-        },
-        extra_env,
-    );
+    let (crate_graph, proc_macros) = ws.to_crate_graph(&mut |path: &AbsPath| {
+        let contents = loader.load_sync(path);
+        let path = vfs::VfsPath::from(path.to_path_buf());
+        vfs.set_file_contents(path.clone(), contents);
+        vfs.file_id(&path)
+    });
     let proc_macros = {
         let proc_macro_server = match &proc_macro_server {
             Some(Ok(it)) => Ok(it),

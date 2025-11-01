@@ -202,7 +202,6 @@ impl CargoTargetSpec {
                 }
             }
         }
-        cargo_args.extend(config.cargo_extra_args.iter().cloned());
         (cargo_args, executable_args)
     }
 

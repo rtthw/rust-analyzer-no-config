@@ -1,18 +1,13 @@
 //! Read `.cargo/config.toml` as a JSON object
 use paths::{Utf8Path, Utf8PathBuf};
-use rustc_hash::FxHashMap;
 use toolchain::Tool;
 
 use crate::{ManifestPath, Sysroot, utf8_stdout};
 
 pub(crate) type CargoConfigFile = serde_json::Map<String, serde_json::Value>;
 
-pub(crate) fn read(
-    manifest: &ManifestPath,
-    extra_env: &FxHashMap<String, Option<String>>,
-    sysroot: &Sysroot,
-) -> Option<CargoConfigFile> {
-    let mut cargo_config = sysroot.tool(Tool::Cargo, manifest.parent(), extra_env);
+pub(crate) fn read(manifest: &ManifestPath, sysroot: &Sysroot) -> Option<CargoConfigFile> {
+    let mut cargo_config = sysroot.tool(Tool::Cargo, manifest.parent());
     cargo_config
         .args(["-Z", "unstable-options", "config", "get", "--format", "json"])
         .env("RUSTC_BOOTSTRAP", "1");

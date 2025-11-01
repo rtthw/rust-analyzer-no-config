@@ -13,8 +13,7 @@ use paths::Utf8PathBuf;
 use profile::StopWatch;
 use project_model::toolchain_info::{QueryConfig, target_data};
 use project_model::{
-    CargoConfig, ManifestPath, ProjectWorkspace, ProjectWorkspaceKind, RustLibSource,
-    RustSourceWorkspaceConfig, Sysroot,
+    ManifestPath, ProjectWorkspace, ProjectWorkspaceKind, RustSourceWorkspaceConfig, Sysroot,
 };
 
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
@@ -67,14 +66,8 @@ impl Tester {
         path.push("ra-rustc-test");
         let tmp_file = path.join("ra-rustc-test.rs");
         std::fs::write(&tmp_file, "")?;
-        let cargo_config = CargoConfig {
-            sysroot: Some(RustLibSource::Discover),
-            all_targets: true,
-            set_test: true,
-            ..Default::default()
-        };
 
-        let mut sysroot = Sysroot::discover(tmp_file.parent().unwrap(), &cargo_config.extra_env);
+        let mut sysroot = Sysroot::discover(tmp_file.parent().unwrap());
         let loaded_sysroot = sysroot.load_workspace(
             &RustSourceWorkspaceConfig::default_cargo(),
             false,
@@ -88,7 +81,6 @@ impl Tester {
         let target_data = target_data::get(
             QueryConfig::Rustc(&sysroot, tmp_file.parent().unwrap().as_ref()),
             None,
-            &cargo_config.extra_env,
         );
 
         let workspace = ProjectWorkspace {
@@ -109,8 +101,7 @@ impl Tester {
             with_proc_macro_server: ProcMacroServerChoice::Sysroot,
             prefill_caches: false,
         };
-        let (db, _vfs, _proc_macro) =
-            load_workspace(workspace, &cargo_config.extra_env, &load_cargo_config)?;
+        let (db, _vfs, _proc_macro) = load_workspace(workspace, &load_cargo_config)?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
         let krates = Crate::all(db);

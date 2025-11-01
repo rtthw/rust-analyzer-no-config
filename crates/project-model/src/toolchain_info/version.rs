@@ -1,22 +1,18 @@
 //! Get the version string of the toolchain.
 
 use anyhow::Context;
-use rustc_hash::FxHashMap;
 use semver::Version;
 use toolchain::Tool;
 
 use crate::{toolchain_info::QueryConfig, utf8_stdout};
 
-pub(crate) fn get(
-    config: QueryConfig<'_>,
-    extra_env: &FxHashMap<String, Option<String>>,
-) -> Result<Option<Version>, anyhow::Error> {
+pub(crate) fn get(config: QueryConfig<'_>) -> Result<Option<Version>, anyhow::Error> {
     let (mut cmd, prefix) = match config {
         QueryConfig::Cargo(sysroot, cargo_toml, _) => {
-            (sysroot.tool(Tool::Cargo, cargo_toml.parent(), extra_env), "cargo ")
+            (sysroot.tool(Tool::Cargo, cargo_toml.parent()), "cargo ")
         }
         QueryConfig::Rustc(sysroot, current_dir) => {
-            (sysroot.tool(Tool::Rustc, current_dir, extra_env), "rustc ")
+            (sysroot.tool(Tool::Rustc, current_dir), "rustc ")
         }
     };
     cmd.arg("--version");
@@ -45,13 +41,13 @@ mod tests {
         let manifest_path =
             ManifestPath::try_from(AbsPathBuf::assert(Utf8PathBuf::from(manifest_path))).unwrap();
         let cfg = QueryConfig::Cargo(&sysroot, &manifest_path, &None);
-        assert!(get(cfg, &FxHashMap::default()).is_ok());
+        assert!(get(cfg).is_ok());
     }
 
     #[test]
     fn rustc() {
         let sysroot = Sysroot::empty();
         let cfg = QueryConfig::Rustc(&sysroot, env!("CARGO_MANIFEST_DIR").as_ref());
-        assert!(get(cfg, &FxHashMap::default()).is_ok());
+        assert!(get(cfg).is_ok());
     }
 }

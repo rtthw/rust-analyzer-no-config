@@ -2,7 +2,6 @@
 use std::path::Path;
 
 use anyhow::Context;
-use rustc_hash::FxHashMap;
 use toolchain::Tool;
 
 use crate::{
@@ -11,11 +10,7 @@ use crate::{
 
 /// For cargo, runs `cargo -Zunstable-options config get build.target` to get the configured project target(s).
 /// For rustc, runs `rustc --print -vV` to get the host target.
-pub fn get(
-    config: QueryConfig<'_>,
-    target: Option<&str>,
-    extra_env: &FxHashMap<String, Option<String>>,
-) -> anyhow::Result<Vec<String>> {
+pub fn get(config: QueryConfig<'_>, target: Option<&str>) -> anyhow::Result<Vec<String>> {
     let _p = tracing::info_span!("target_tuple::get").entered();
     if let Some(target) = target {
         return Ok(vec![target.to_owned()]);
@@ -30,15 +25,11 @@ pub fn get(
         }
         QueryConfig::Rustc(sysroot, current_dir) => (sysroot, current_dir),
     };
-    rustc_discover_host_tuple(extra_env, sysroot, current_dir).map(|it| vec![it])
+    rustc_discover_host_tuple(sysroot, current_dir).map(|it| vec![it])
 }
 
-fn rustc_discover_host_tuple(
-    extra_env: &FxHashMap<String, Option<String>>,
-    sysroot: &Sysroot,
-    current_dir: &Path,
-) -> anyhow::Result<String> {
-    let mut cmd = sysroot.tool(Tool::Rustc, current_dir, extra_env);
+fn rustc_discover_host_tuple(sysroot: &Sysroot, current_dir: &Path) -> anyhow::Result<String> {
+    let mut cmd = sysroot.tool(Tool::Rustc, current_dir);
     cmd.arg("-vV");
     let stdout = utf8_stdout(&mut cmd)
         .with_context(|| format!("unable to discover host platform via `{cmd:?}`"))?;
@@ -93,13 +84,13 @@ mod tests {
         let manifest_path =
             ManifestPath::try_from(AbsPathBuf::assert(Utf8PathBuf::from(manifest_path))).unwrap();
         let cfg = QueryConfig::Cargo(&sysroot, &manifest_path, &None);
-        assert!(get(cfg, None, &FxHashMap::default()).is_ok());
+        assert!(get(cfg, None).is_ok());
     }
 
     #[test]
     fn rustc() {
         let sysroot = Sysroot::empty();
         let cfg = QueryConfig::Rustc(&sysroot, env!("CARGO_MANIFEST_DIR").as_ref());
-        assert!(get(cfg, None, &FxHashMap::default()).is_ok());
+        assert!(get(cfg, None).is_ok());
     }
 }

@@ -101,8 +101,7 @@ impl flags::AnalysisStats {
             Some(build_scripts_sw.elapsed())
         };
 
-        let (db, vfs, _proc_macro) =
-            load_workspace(workspace.clone(), &cargo_config.extra_env, &load_cargo_config)?;
+        let (db, vfs, _proc_macro) = load_workspace(workspace.clone(), &load_cargo_config)?;
         eprint!("{:<20} {}", "Database loaded:", db_load_sw.elapsed());
         eprint!(" (metadata {metadata_time}");
         if let Some(build_scripts_time) = build_scripts_time {

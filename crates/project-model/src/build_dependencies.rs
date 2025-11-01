@@ -180,7 +180,6 @@ impl WorkspaceBuildScripts {
     pub(crate) fn rustc_crates(
         rustc: &CargoWorkspace,
         current_dir: &AbsPath,
-        extra_env: &FxHashMap<String, Option<String>>,
         sysroot: &Sysroot,
     ) -> Self {
         let mut bs = WorkspaceBuildScripts::default();
@@ -189,14 +188,14 @@ impl WorkspaceBuildScripts {
         }
         let res = (|| {
             let target_libdir = (|| {
-                let mut cargo_config = sysroot.tool(Tool::Cargo, current_dir, extra_env);
+                let mut cargo_config = sysroot.tool(Tool::Cargo, current_dir);
                 cargo_config
                     .args(["rustc", "-Z", "unstable-options", "--print", "target-libdir"])
                     .env("RUSTC_BOOTSTRAP", "1");
                 if let Ok(it) = utf8_stdout(&mut cargo_config) {
                     return Ok(it);
                 }
-                let mut cmd = sysroot.tool(Tool::Rustc, current_dir, extra_env);
+                let mut cmd = sysroot.tool(Tool::Rustc, current_dir);
                 cmd.args(["--print", "target-libdir"]);
                 utf8_stdout(&mut cmd)
             })()?;
@@ -436,16 +435,15 @@ impl WorkspaceBuildScripts {
     ) -> io::Result<(Option<temp_dir::TempDir>, Command)> {
         match config.run_build_script_command.as_deref() {
             Some([program, args @ ..]) => {
-                let mut cmd = toolchain::command(program, current_dir, &config.extra_env);
+                let mut cmd = toolchain::command(program, current_dir);
                 cmd.args(args);
                 Ok((None, cmd))
             }
             _ => {
                 let mut requires_unstable_options = false;
-                let mut cmd = sysroot.tool(Tool::Cargo, current_dir, &config.extra_env);
+                let mut cmd = sysroot.tool(Tool::Cargo, current_dir);
 
                 cmd.args(["check", "--quiet", "--workspace", "--message-format=json"]);
-                cmd.args(&config.extra_args);
 
                 cmd.arg("--manifest-path");
                 cmd.arg(manifest_path);

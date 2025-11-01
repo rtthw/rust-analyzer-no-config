@@ -763,11 +763,6 @@ config_data! {
         cargo_cfgs: Vec<String> = {
             vec!["debug_assertions".into(), "miri".into()]
         },
-        /// Extra arguments that are passed to every cargo invocation.
-        cargo_extraArgs: Vec<String> = vec![],
-        /// Extra environment variables that will be set when running cargo, rustc
-        /// or other commands within the workspace. Useful for setting RUSTFLAGS.
-        cargo_extraEnv: FxHashMap<String, Option<String>> = FxHashMap::default(),
         /// List of features to activate.
         ///
         /// Set this to `"all"` to pass `--all-features` to cargo.
@@ -813,11 +808,6 @@ config_data! {
         check_allTargets | checkOnSave_allTargets: Option<bool>          = None,
         /// Cargo command to use for `cargo check`.
         check_command | checkOnSave_command: String                      = "check".to_owned(),
-        /// Extra arguments for `cargo check`.
-        check_extraArgs | checkOnSave_extraArgs: Vec<String>             = vec![],
-        /// Extra environment variables that will be set when running `cargo check`.
-        /// Extends `#rust-analyzer.cargo.extraEnv#`.
-        check_extraEnv | checkOnSave_extraEnv: FxHashMap<String, Option<String>> = FxHashMap::default(),
         /// List of features to activate. Defaults to
         /// `#rust-analyzer.cargo.features#`.
         ///
@@ -887,9 +877,6 @@ config_data! {
 
         /// Command to be executed instead of 'cargo' for runnables.
         runnables_command: Option<String> = None,
-        /// Additional arguments to be passed to cargo for runnables such as
-        /// tests or binaries. For example, it may be `--release`.
-        runnables_extraArgs: Vec<String>   = vec![],
         /// Additional arguments to be passed through Cargo to launched tests, benchmarks, or
         /// doc-tests.
         ///
@@ -909,8 +896,6 @@ config_data! {
         /// This option does not take effect until rust-analyzer is restarted.
         rustc_source: Option<String> = None,
 
-        /// Additional arguments to `rustfmt`.
-        rustfmt_extraArgs: Vec<String>               = vec![],
         /// Advanced option, fully override the command rust-analyzer uses for
         /// formatting. This should be the equivalent of `rustfmt` here, and
         /// not that of `cargo fmt`. The file contents will be passed on the
@@ -1535,7 +1520,7 @@ pub struct NotificationsConfig {
 
 #[derive(Debug, Clone)]
 pub enum RustfmtConfig {
-    Rustfmt { extra_args: Vec<String>, enable_range_formatting: bool },
+    Rustfmt { enable_range_formatting: bool },
     CustomCommand { command: String, args: Vec<String> },
 }
 
@@ -1544,8 +1529,6 @@ pub enum RustfmtConfig {
 pub struct RunnablesConfig {
     /// Custom command to be executed instead of `cargo` for runnables.
     pub override_cargo: Option<String>,
-    /// Additional arguments for the `cargo`, e.g. `--release`.
-    pub cargo_extra_args: Vec<String>,
     /// Additional arguments for the binary being run, if it is a test or benchmark.
     pub extra_test_binary_args: Vec<String>,
 }
@@ -2123,32 +2106,6 @@ impl Config {
         }
     }
 
-    pub fn extra_args(&self, source_root: Option<SourceRootId>) -> &Vec<String> {
-        self.cargo_extraArgs(source_root)
-    }
-
-    pub fn extra_env(
-        &self,
-        source_root: Option<SourceRootId>,
-    ) -> &FxHashMap<String, Option<String>> {
-        self.cargo_extraEnv(source_root)
-    }
-
-    pub fn check_extra_args(&self, source_root: Option<SourceRootId>) -> Vec<String> {
-        let mut extra_args = self.extra_args(source_root).clone();
-        extra_args.extend_from_slice(self.check_extraArgs(source_root));
-        extra_args
-    }
-
-    pub fn check_extra_env(
-        &self,
-        source_root: Option<SourceRootId>,
-    ) -> FxHashMap<String, Option<String>> {
-        let mut extra_env = self.cargo_extraEnv(source_root).clone();
-        extra_env.extend(self.check_extraEnv(source_root).clone());
-        extra_env
-    }
-
     pub fn lru_parse_query_capacity(&self) -> Option<u16> {
         self.lru_capacity().to_owned()
     }
@@ -2280,8 +2237,6 @@ impl Config {
                 InvocationStrategy::PerWorkspace => project_model::InvocationStrategy::PerWorkspace,
             },
             run_build_script_command: self.cargo_buildScripts_overrideCommand(source_root).clone(),
-            extra_args: self.cargo_extraArgs(source_root).clone(),
-            extra_env: self.cargo_extraEnv(source_root).clone(),
             target_dir: self.target_dir_from_config(source_root),
             set_test: *self.cfg_setTest(source_root),
             no_deps: *self.cargo_noDeps(source_root),
@@ -2347,7 +2302,6 @@ impl Config {
                 RustfmtConfig::CustomCommand { command, args }
             }
             Some(_) | None => RustfmtConfig::Rustfmt {
-                extra_args: self.rustfmt_extraArgs(source_root_id).clone(),
                 enable_range_formatting: *self.rustfmt_rangeFormatting_enable(source_root_id),
             },
         }
@@ -2367,9 +2321,7 @@ impl Config {
                 CargoFeaturesDef::All => vec![],
                 CargoFeaturesDef::Selected(it) => it,
             },
-            extra_args: self.extra_args(source_root).clone(),
             extra_test_bin_args: self.runnables_extraTestBinaryArgs(source_root).clone(),
-            extra_env: self.extra_env(source_root).clone(),
             target_dir: self.target_dir_from_config(source_root),
             set_test: true,
         }
@@ -2383,7 +2335,6 @@ impl Config {
                 FlycheckConfig::CustomCommand {
                     command,
                     args,
-                    extra_env: self.check_extra_env(source_root),
                     invocation_strategy: match self.check_invocationStrategy(source_root) {
                         InvocationStrategy::Once => crate::flycheck::InvocationStrategy::Once,
                         InvocationStrategy::PerWorkspace => {
@@ -2425,9 +2376,7 @@ impl Config {
                         CargoFeaturesDef::All => vec![],
                         CargoFeaturesDef::Selected(it) => it,
                     },
-                    extra_args: self.check_extra_args(source_root),
                     extra_test_bin_args: self.runnables_extraTestBinaryArgs(source_root).clone(),
-                    extra_env: self.check_extra_env(source_root),
                     target_dir: self.target_dir_from_config(source_root),
                     set_test: *self.cfg_setTest(source_root),
                 },
@@ -2460,7 +2409,6 @@ impl Config {
     pub fn runnables(&self, source_root: Option<SourceRootId>) -> RunnablesConfig {
         RunnablesConfig {
             override_cargo: self.runnables_command(source_root).clone(),
-            cargo_extra_args: self.runnables_extraArgs(source_root).clone(),
             extra_test_binary_args: self.runnables_extraTestBinaryArgs(source_root).clone(),
         }
     }

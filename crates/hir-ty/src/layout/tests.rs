@@ -2,7 +2,6 @@ use base_db::target::TargetData;
 use either::Either;
 use hir_def::db::DefDatabase;
 use project_model::{Sysroot, toolchain_info::QueryConfig};
-use rustc_hash::FxHashMap;
 use rustc_type_ir::inherent::GenericArgs as _;
 use syntax::ToSmolStr;
 use test_fixture::WithFixture;
@@ -22,7 +21,6 @@ fn current_machine_target_data() -> TargetData {
     project_model::toolchain_info::target_data::get(
         QueryConfig::Rustc(&Sysroot::empty(), &std::env::current_dir().unwrap()),
         None,
-        &FxHashMap::default(),
     )
     .unwrap()
 }

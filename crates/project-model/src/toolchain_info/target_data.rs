@@ -2,7 +2,6 @@
 
 use anyhow::Context;
 use base_db::target;
-use rustc_hash::FxHashMap;
 use serde_derive::Deserialize;
 use toolchain::Tool;
 
@@ -35,11 +34,7 @@ pub struct TargetSpec {
 }
 
 /// Uses `rustc --print target-spec-json`.
-pub fn get(
-    config: QueryConfig<'_>,
-    target: Option<&str>,
-    extra_env: &FxHashMap<String, Option<String>>,
-) -> anyhow::Result<target::TargetData> {
+pub fn get(config: QueryConfig<'_>, target: Option<&str>) -> anyhow::Result<target::TargetData> {
     const RUSTC_ARGS: [&str; 2] = ["--print", "target-spec-json"];
     let process = |output: String| {
         let target_spec = serde_json::from_str::<TargetSpec>(&output).map_err(|_| {
@@ -52,7 +47,7 @@ pub fn get(
     };
     let (sysroot, current_dir) = match config {
         QueryConfig::Cargo(sysroot, cargo_toml, _) => {
-            let mut cmd = sysroot.tool(Tool::Cargo, cargo_toml.parent(), extra_env);
+            let mut cmd = sysroot.tool(Tool::Cargo, cargo_toml.parent());
             cmd.env("RUSTC_BOOTSTRAP", "1");
             cmd.args(["rustc", "-Z", "unstable-options"]).args(RUSTC_ARGS);
             if let Some(target) = target {
@@ -70,7 +65,7 @@ pub fn get(
         QueryConfig::Rustc(sysroot, current_dir) => (sysroot, current_dir),
     };
 
-    let mut cmd = Sysroot::tool(sysroot, Tool::Rustc, current_dir, extra_env);
+    let mut cmd = Sysroot::tool(sysroot, Tool::Rustc, current_dir);
     cmd.env("RUSTC_BOOTSTRAP", "1").args(["-Z", "unstable-options"]).args(RUSTC_ARGS);
     if let Some(target) = target {
         cmd.args(["--target", target]);
@@ -95,13 +90,13 @@ mod tests {
         let manifest_path =
             ManifestPath::try_from(AbsPathBuf::assert(Utf8PathBuf::from(manifest_path))).unwrap();
         let cfg = QueryConfig::Cargo(&sysroot, &manifest_path, &None);
-        assert!(get(cfg, None, &FxHashMap::default()).is_ok());
+        assert!(get(cfg, None).is_ok());
     }
 
     #[test]
     fn rustc() {
         let sysroot = Sysroot::empty();
         let cfg = QueryConfig::Rustc(&sysroot, env!("CARGO_MANIFEST_DIR").as_ref());
-        assert!(get(cfg, None, &FxHashMap::default()).is_ok());
+        assert!(get(cfg, None).is_ok());
     }
 }

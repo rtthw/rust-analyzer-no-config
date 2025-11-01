@@ -10,7 +10,6 @@ use std::{env, fs, ops::Not, path::Path, process::Command};
 use anyhow::{Result, format_err};
 use itertools::Itertools;
 use paths::{AbsPath, AbsPathBuf, Utf8Path, Utf8PathBuf};
-use rustc_hash::FxHashMap;
 use stdx::format_to;
 use toolchain::{Tool, probe_for_binary};
 
@@ -110,20 +109,20 @@ impl Sysroot {
 
 impl Sysroot {
     /// Attempts to discover the toolchain's sysroot from the given `dir`.
-    pub fn discover(dir: &AbsPath, extra_env: &FxHashMap<String, Option<String>>) -> Sysroot {
-        let sysroot_dir = discover_sysroot_dir(dir, extra_env);
-        let rust_lib_src_dir = sysroot_dir.as_ref().ok().map(|sysroot_dir| {
-            discover_rust_lib_src_dir_or_add_component(sysroot_dir, dir, extra_env)
-        });
+    pub fn discover(dir: &AbsPath) -> Sysroot {
+        let sysroot_dir = discover_sysroot_dir(dir);
+        let rust_lib_src_dir = sysroot_dir
+            .as_ref()
+            .ok()
+            .map(|sysroot_dir| discover_rust_lib_src_dir_or_add_component(sysroot_dir, dir));
         Sysroot::assemble(Some(sysroot_dir), rust_lib_src_dir)
     }
 
     pub fn discover_with_src_override(
         current_dir: &AbsPath,
-        extra_env: &FxHashMap<String, Option<String>>,
         rust_lib_src_dir: AbsPathBuf,
     ) -> Sysroot {
-        let sysroot_dir = discover_sysroot_dir(current_dir, extra_env);
+        let sysroot_dir = discover_sysroot_dir(current_dir);
         Sysroot::assemble(Some(sysroot_dir), Some(Ok(rust_lib_src_dir)))
     }
 
@@ -142,12 +141,7 @@ impl Sysroot {
     }
 
     /// Returns a command to run a tool preferring the cargo proxies if the sysroot exists.
-    pub fn tool(
-        &self,
-        tool: Tool,
-        current_dir: impl AsRef<Path>,
-        envs: &FxHashMap<String, Option<String>>,
-    ) -> Command {
+    pub fn tool(&self, tool: Tool, current_dir: impl AsRef<Path>) -> Command {
         match self.root() {
             Some(root) => {
                 // special case rustc, we can look that up directly in the sysroot's bin folder
@@ -156,19 +150,17 @@ impl Sysroot {
                     && let Some(path) =
                         probe_for_binary(root.join("bin").join(Tool::Rustc.name()).into())
                 {
-                    return toolchain::command(path, current_dir, envs);
+                    return toolchain::command(path, current_dir);
                 }
 
-                let mut cmd = toolchain::command(tool.prefer_proxy(), current_dir, envs);
-                if !envs.contains_key("RUSTUP_TOOLCHAIN")
-                    && std::env::var_os("RUSTUP_TOOLCHAIN").is_none()
-                {
+                let mut cmd = toolchain::command(tool.prefer_proxy(), current_dir);
+                if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
                     cmd.env("RUSTUP_TOOLCHAIN", AsRef::<std::path::Path>::as_ref(root));
                 }
 
                 cmd
             }
-            _ => toolchain::command(tool.path(), current_dir, envs),
+            _ => toolchain::command(tool.path(), current_dir),
         }
     }
 
@@ -334,13 +326,6 @@ impl Sysroot {
         progress: &dyn Fn(String),
     ) -> Result<RustLibSrcWorkspace> {
         tracing::debug!("Loading library metadata: {library_manifest}");
-        let mut cargo_config = cargo_config.clone();
-        // the sysroot uses `public-dependency`, so we make cargo think it's a nightly
-        cargo_config.extra_env.insert(
-            "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS".to_owned(),
-            Some("nightly".to_owned()),
-        );
-
         // Make sure we never attempt to write to the sysroot
         let locked = true;
         let (mut res, err) =
@@ -405,11 +390,8 @@ impl Sysroot {
     }
 }
 
-fn discover_sysroot_dir(
-    current_dir: &AbsPath,
-    extra_env: &FxHashMap<String, Option<String>>,
-) -> Result<AbsPathBuf> {
-    let mut rustc = toolchain::command(Tool::Rustc.path(), current_dir, extra_env);
+fn discover_sysroot_dir(current_dir: &AbsPath) -> Result<AbsPathBuf> {
+    let mut rustc = toolchain::command(Tool::Rustc.path(), current_dir);
     rustc.current_dir(current_dir).args(["--print", "sysroot"]);
     tracing::debug!("Discovering sysroot by {:?}", rustc);
     let stdout = utf8_stdout(&mut rustc)?;
@@ -436,11 +418,10 @@ fn discover_rust_lib_src_dir(sysroot_path: &AbsPathBuf) -> Option<AbsPathBuf> {
 fn discover_rust_lib_src_dir_or_add_component(
     sysroot_path: &AbsPathBuf,
     current_dir: &AbsPath,
-    extra_env: &FxHashMap<String, Option<String>>,
 ) -> Result<AbsPathBuf> {
     discover_rust_lib_src_dir(sysroot_path)
         .or_else(|| {
-            let mut rustup = toolchain::command(Tool::Rustup.prefer_proxy(), current_dir, extra_env);
+            let mut rustup = toolchain::command(Tool::Rustup.prefer_proxy(), current_dir);
             rustup.args(["component", "add", "rust-src"]);
             tracing::info!("adding rust-src component by {:?}", rustup);
             utf8_stdout(&mut rustup).ok()?;

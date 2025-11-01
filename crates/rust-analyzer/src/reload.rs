@@ -679,15 +679,9 @@ impl GlobalState {
                         .into_iter()
                         .map(|(k, v)| (k.clone(), Some(v.clone())))
                         .chain(
-                            self.config.extra_env(None).iter().map(|(k, v)| (k.clone(), v.clone())),
-                        )
-                        .chain(
                             ws.sysroot
                                 .root()
-                                .filter(|_| {
-                                    !self.config.extra_env(None).contains_key("RUSTUP_TOOLCHAIN")
-                                        && std::env::var_os("RUSTUP_TOOLCHAIN").is_none()
-                                })
+                                .filter(|_| std::env::var_os("RUSTUP_TOOLCHAIN").is_none())
                                 .map(|it| ("RUSTUP_TOOLCHAIN".to_owned(), Some(it.to_string()))),
                         )
                         .collect(),
@@ -760,7 +754,7 @@ impl GlobalState {
                 file_id
             };
 
-            ws_to_crate_graph(&self.workspaces, self.config.extra_env(None), load)
+            ws_to_crate_graph(&self.workspaces, load)
         };
         let mut change = ChangeWithProcMacros::default();
         if initial_build || !self.config.expand_proc_macros() {
@@ -922,13 +916,12 @@ impl GlobalState {
 // FIXME: Move this into load-cargo?
 pub fn ws_to_crate_graph(
     workspaces: &[ProjectWorkspace],
-    extra_env: &FxHashMap<String, Option<String>>,
     mut load: impl FnMut(&AbsPath) -> Option<vfs::FileId>,
 ) -> (CrateGraphBuilder, Vec<ProcMacroPaths>) {
     let mut crate_graph = CrateGraphBuilder::default();
     let mut proc_macro_paths = Vec::default();
     for ws in workspaces {
-        let (other, mut crate_proc_macros) = ws.to_crate_graph(&mut load, extra_env);
+        let (other, mut crate_proc_macros) = ws.to_crate_graph(&mut load);
 
         crate_graph.extend(other, &mut crate_proc_macros);
         proc_macro_paths.push(crate_proc_macros);

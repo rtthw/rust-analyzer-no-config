@@ -282,7 +282,7 @@ fn publish_dummy_diag(conn: &Connection, uri: &Url) -> Result<()> {
 
 fn run_rustfmt(input: &str) -> Result<String> {
     let cwd = std::env::current_dir().expect("can't determine CWD");
-    let mut child = command("rustfmt", &cwd, &FxHashMap::default())
+    let mut child = command("rustfmt", &cwd)
         .arg("--emit")
         .arg("stdout")
         .stdin(Stdio::piped())

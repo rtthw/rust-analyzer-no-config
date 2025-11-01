@@ -302,8 +302,7 @@ impl flags::Lsif {
         let build_scripts = workspace.run_build_scripts(cargo_config, no_progress)?;
         workspace.set_build_scripts(build_scripts);
 
-        let (db, vfs, _proc_macro) =
-            load_workspace(workspace, &cargo_config.extra_env, &load_cargo_config)?;
+        let (db, vfs, _proc_macro) = load_workspace(workspace, &load_cargo_config)?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
         let analysis = host.analysis();

@@ -115,10 +115,6 @@ pub struct CargoConfig {
     pub wrap_rustc_in_build_scripts: bool,
     /// The command to run instead of `cargo check` for building build scripts.
     pub run_build_script_command: Option<Vec<String>>,
-    /// Extra args to pass to the cargo command.
-    pub extra_args: Vec<String>,
-    /// Extra env vars to set when invoking the cargo command
-    pub extra_env: FxHashMap<String, Option<String>>,
     pub invocation_strategy: InvocationStrategy,
     /// Optional path to use instead of `target` when building
     pub target_dir: Option<Utf8PathBuf>,
@@ -304,10 +300,6 @@ pub struct CargoMetadataConfig {
     pub features: CargoFeatures,
     /// rustc targets
     pub targets: Vec<String>,
-    /// Extra args to pass to the cargo command.
-    pub extra_args: Vec<String>,
-    /// Extra env vars to set when invoking the cargo command
-    pub extra_env: FxHashMap<String, Option<String>>,
     /// What kind of metadata are we fetching: workspace, rustc, or sysroot.
     pub kind: &'static str,
     /// The toolchain version, if known.
@@ -631,7 +623,7 @@ impl FetchMetadata {
         sysroot: &Sysroot,
         no_deps: bool,
     ) -> Self {
-        let cargo = sysroot.tool(Tool::Cargo, current_dir, &config.extra_env);
+        let cargo = sysroot.tool(Tool::Cargo, current_dir);
         let mut command = MetadataCommand::new();
         command.env(NO_RUSTUP_AUTO_INSTALL_ENV.0, NO_RUSTUP_AUTO_INSTALL_ENV.1);
         command.cargo_path(cargo.get_program());
@@ -653,18 +645,6 @@ impl FetchMetadata {
         command.current_dir(current_dir);
 
         let mut other_options = vec![];
-        // cargo metadata only supports a subset of flags of what cargo usually accepts, and usually
-        // the only relevant flags for metadata here are unstable ones, so we pass those along
-        // but nothing else
-        let mut extra_args = config.extra_args.iter();
-        while let Some(arg) = extra_args.next() {
-            if arg == "-Z"
-                && let Some(arg) = extra_args.next()
-            {
-                other_options.push("-Z".to_owned());
-                other_options.push(arg.to_owned());
-            }
-        }
 
         let mut lockfile_path = None;
         if cargo_toml.is_rust_manifest() {

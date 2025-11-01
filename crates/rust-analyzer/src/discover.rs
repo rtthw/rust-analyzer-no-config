@@ -3,7 +3,6 @@
 use std::{io, path::Path};
 
 use crossbeam_channel::Sender;
-use ide_db::FxHashMap;
 use paths::{AbsPathBuf, Utf8Path, Utf8PathBuf};
 use project_model::ProjectJsonData;
 use serde::{Deserialize, Serialize};
@@ -63,7 +62,7 @@ impl DiscoverCommand {
             .collect();
 
         // TODO: are we sure the extra env should be empty?
-        let mut cmd = toolchain::command(command, current_dir, &FxHashMap::default());
+        let mut cmd = toolchain::command(command, current_dir);
         cmd.args(args);
 
         Ok(DiscoverHandle {
