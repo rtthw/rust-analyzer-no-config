@@ -445,8 +445,8 @@ impl GlobalState {
         if self.is_quiescent() {
             let became_quiescent = !was_quiescent;
             if became_quiescent {
-                if self.config.check_on_save(None)
-                    && self.config.flycheck_workspace(None)
+                if self.config.check_on_save()
+                    && self.config.flycheck_workspace()
                     && !self.fetch_build_data_queue.op_requested()
                 {
                     // Project has loaded properly, kick off initial flycheck
@@ -487,7 +487,7 @@ impl GlobalState {
                 became_quiescent || state_changed || memdocs_added_or_removed;
             if project_or_mem_docs_changed
                 && !self.config.text_document_diagnostic()
-                && self.config.publish_diagnostics(None)
+                && self.config.publish_diagnostics()
             {
                 self.update_diagnostics();
             }
@@ -509,7 +509,7 @@ impl GlobalState {
             }
         }
 
-        if (self.config.cargo_autoreload_config(None)
+        if (self.config.cargo_autoreload_config()
             || self.config.discover_workspace_config().is_some())
             && let Some((cause, FetchWorkspaceRequest { path, force_crate_graph_reload })) =
                 self.fetch_workspaces_queue.should_start_op()
@@ -1023,7 +1023,7 @@ impl GlobalState {
             } => {
                 let snap = self.snapshot();
                 let diagnostics = crate::diagnostics::flycheck_to_proto::map_rust_diagnostic_to_lsp(
-                    &self.config.diagnostics_map(None),
+                    &self.config.diagnostics_map(),
                     diagnostic,
                     &workspace_root,
                     &snap,
@@ -1086,9 +1086,9 @@ impl GlobalState {
                 // When we're running multiple flychecks, we have to include a disambiguator in
                 // the title, or the editor complains. Note that this is a user-facing string.
                 let title = if self.flycheck.len() == 1 {
-                    format!("{}", self.config.flycheck(None))
+                    format!("{}", self.config.flycheck())
                 } else {
-                    format!("{} (#{})", self.config.flycheck(None), id + 1)
+                    format!("{} (#{})", self.config.flycheck(), id + 1)
                 };
                 self.report_progress(
                     &title,

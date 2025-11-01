@@ -15,9 +15,8 @@ use hir::ChangeWithProcMacros;
 use ide::{Analysis, AnalysisHost, Cancellable, FileId, SourceRootId};
 use ide_db::{
     MiniCore,
-    base_db::{Crate, ProcMacroPaths, SourceDatabase},
+    base_db::{Crate, ProcMacroPaths},
 };
-use itertools::Itertools;
 use load_cargo::SourceRootConfig;
 use lsp_types::{SemanticTokens, Url};
 use parking_lot::{
@@ -30,10 +29,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use stdx::thread;
 use tracing::{Level, span, trace};
 use triomphe::Arc;
-use vfs::{AbsPathBuf, AnchoredPathBuf, ChangeKind, Vfs, VfsPath};
+use vfs::{AbsPathBuf, AnchoredPathBuf, Vfs, VfsPath};
 
 use crate::{
-    config::{Config, ConfigChange, ConfigErrors, RatomlFileKind},
+    config::{Config, ConfigChange, ConfigErrors},
     diagnostics::{CheckFixes, DiagnosticCollection},
     discover,
     flycheck::{FlycheckHandle, FlycheckMessage},
@@ -326,12 +325,6 @@ impl GlobalState {
 
     pub(crate) fn process_changes(&mut self) -> bool {
         let _p = span!(Level::INFO, "GlobalState::process_changes").entered();
-        // We cannot directly resolve a change in a ratoml file to a format
-        // that can be used by the config module because config talks
-        // in `SourceRootId`s instead of `FileId`s and `FileId` -> `SourceRootId`
-        // mapping is not ready until `AnalysisHost::apply_changes` has been called.
-        let mut modified_ratoml_files: FxHashMap<FileId, (ChangeKind, vfs::VfsPath)> =
-            FxHashMap::default();
 
         let mut change = ChangeWithProcMacros::default();
         let mut guard = self.vfs.write();
@@ -360,10 +353,6 @@ impl GlobalState {
                 let mut modified_rust_files = vec![];
                 for file in changed_files.into_values() {
                     let vfs_path = vfs.file_path(file.file_id);
-                    if let Some(("rust-analyzer", Some("toml"))) = vfs_path.name_and_extension() {
-                        // Remember ids to use them after `apply_changes`
-                        modified_ratoml_files.insert(file.file_id, (file.kind(), vfs_path.clone()));
-                    }
 
                     if let Some(path) = vfs_path.as_path() {
                         has_structure_changes |= file.is_created_or_deleted();
@@ -434,79 +423,11 @@ impl GlobalState {
             });
 
         self.analysis_host.apply_change(change);
-        if !modified_ratoml_files.is_empty()
-            || !self.config.same_source_root_parent_map(&self.local_roots_parent_map)
-        {
+        if !self.config.same_source_root_parent_map(&self.local_roots_parent_map) {
             let config_change = {
                 let _p = span!(Level::INFO, "GlobalState::process_changes/config_change").entered();
 
                 let mut change = ConfigChange::default();
-                let db = self.analysis_host.raw_database();
-
-                // FIXME @alibektas : This is silly. There is no reason to use VfsPaths when there is SourceRoots. But how
-                // do I resolve a "workspace_root" to its corresponding id without having to rely on a cargo.toml's ( or project json etc.) file id?
-                let workspace_ratoml_paths = self
-                    .workspaces
-                    .iter()
-                    .map(|ws| {
-                        VfsPath::from({
-                            let mut p = ws.workspace_root().to_owned();
-                            p.push("rust-analyzer.toml");
-                            p
-                        })
-                    })
-                    .collect_vec();
-
-                for (file_id, (change_kind, vfs_path)) in modified_ratoml_files {
-                    tracing::info!(%vfs_path, ?change_kind, "Processing rust-analyzer.toml changes");
-
-                    // If change has been made to a ratoml file that
-                    // belongs to a non-local source root, we will ignore it.
-                    let source_root_id = db.file_source_root(file_id).source_root_id(db);
-                    let source_root = db.source_root(source_root_id).source_root(db);
-
-                    if !source_root.is_library {
-                        let entry = if workspace_ratoml_paths.contains(&vfs_path) {
-                            tracing::info!(%vfs_path, ?source_root_id, "workspace rust-analyzer.toml changes");
-                            change.change_workspace_ratoml(
-                                source_root_id,
-                                vfs_path.clone(),
-                                Some(db.file_text(file_id).text(db).clone()),
-                            )
-                        } else {
-                            tracing::info!(%vfs_path, ?source_root_id, "crate rust-analyzer.toml changes");
-                            change.change_ratoml(
-                                source_root_id,
-                                vfs_path.clone(),
-                                Some(db.file_text(file_id).text(db).clone()),
-                            )
-                        };
-
-                        if let Some((kind, old_path, old_text)) = entry {
-                            // SourceRoot has more than 1 RATOML files. In this case lexicographically smaller wins.
-                            if old_path < vfs_path {
-                                tracing::error!(
-                                    "Two `rust-analyzer.toml` files were found inside the same crate. {vfs_path} has no effect."
-                                );
-                                // Put the old one back in.
-                                match kind {
-                                    RatomlFileKind::Crate => {
-                                        change.change_ratoml(source_root_id, old_path, old_text);
-                                    }
-                                    RatomlFileKind::Workspace => {
-                                        change.change_workspace_ratoml(
-                                            source_root_id,
-                                            old_path,
-                                            old_text,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::info!(%vfs_path, "Ignoring library rust-analyzer.toml");
-                    }
-                }
                 change.change_source_root_parent_map(self.local_roots_parent_map.clone());
                 change
             };
@@ -732,10 +653,6 @@ impl GlobalStateSnapshot {
 
     pub(crate) fn file_id_to_url(&self, id: FileId) -> Url {
         file_id_to_url(&self.vfs_read(), id)
-    }
-
-    pub(crate) fn vfs_path_to_file_id(&self, vfs_path: &VfsPath) -> anyhow::Result<FileId> {
-        vfs_path_to_file_id(&self.vfs_read(), vfs_path)
     }
 
     pub(crate) fn file_line_index(&self, file_id: FileId) -> Cancellable<LineIndex> {

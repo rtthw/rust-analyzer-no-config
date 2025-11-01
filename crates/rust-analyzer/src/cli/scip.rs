@@ -53,7 +53,7 @@ impl flags::Scip {
             with_proc_macro_server: ProcMacroServerChoice::Sysroot,
             prefill_caches: true,
         };
-        let cargo_config = config.cargo(None);
+        let cargo_config = config.cargo();
         let (db, vfs, _) = load_workspace_at(
             root.as_path().as_ref(),
             &cargo_config,

@@ -102,7 +102,7 @@ impl GlobalState {
         {
             let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
             self.fetch_workspaces_queue.request_op("discovered projects changed".to_owned(), req)
-        } else if self.config.flycheck(None) != old_config.flycheck(None) {
+        } else if self.config.flycheck() != old_config.flycheck() {
             self.reload_flycheck();
         }
 
@@ -115,12 +115,12 @@ impl GlobalState {
             );
         }
 
-        if self.config.cargo(None) != old_config.cargo(None) {
+        if self.config.cargo() != old_config.cargo() {
             let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
             self.fetch_workspaces_queue.request_op("cargo config changed".to_owned(), req)
         }
 
-        if self.config.cfg_set_test(None) != old_config.cfg_set_test(None) {
+        if self.config.cfg_set_test() != old_config.cfg_set_test() {
             let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
             self.fetch_workspaces_queue.request_op("cfg_set_test config changed".to_owned(), req)
         }
@@ -134,7 +134,7 @@ impl GlobalState {
         };
         let mut message = String::new();
 
-        if !self.config.cargo_autoreload_config(None)
+        if !self.config.cargo_autoreload_config()
             && self.is_quiescent()
             && self.fetch_workspaces_queue.op_requested()
             && self.config.discover_workspace_config().is_none()
@@ -294,7 +294,7 @@ impl GlobalState {
                 .map(ManifestPath::try_from)
                 .filter_map(Result::ok)
                 .collect();
-            let cargo_config = self.config.cargo(None);
+            let cargo_config = self.config.cargo();
             let discover_command = self.config.discover_workspace_config().cloned();
             let is_quiescent = !(self.discover_workspace_queue.op_in_progress()
                 || self.vfs_progress_config_version < self.vfs_config_version
@@ -386,7 +386,7 @@ impl GlobalState {
     pub(crate) fn fetch_build_data(&mut self, cause: Cause) {
         info!(%cause, "will fetch build data");
         let workspaces = Arc::clone(&self.workspaces);
-        let config = self.config.cargo(None);
+        let config = self.config.cargo();
         let root_path = self.config.root_path().clone();
 
         self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |sender| {
@@ -416,7 +416,7 @@ impl GlobalState {
         paths: Vec<ProcMacroPaths>,
     ) {
         info!(%cause, "will load proc macros");
-        let ignored_proc_macros = self.config.ignored_proc_macros(None).clone();
+        let ignored_proc_macros = self.config.ignored_proc_macros().clone();
         let proc_macro_clients = self.proc_macro_clients.clone();
 
         self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |sender| {
@@ -549,7 +549,7 @@ impl GlobalState {
                 );
             });
 
-            if self.config.run_build_scripts(None) {
+            if self.config.run_build_scripts() {
                 self.build_deps_changed = false;
                 self.fetch_build_data_queue.request_op("workspace updated".to_owned(), ());
 
@@ -838,7 +838,7 @@ impl GlobalState {
 
     fn reload_flycheck(&mut self) {
         let _p = tracing::info_span!("GlobalState::reload_flycheck").entered();
-        let config = self.config.flycheck(None);
+        let config = self.config.flycheck();
         let sender = &self.flycheck_sender;
         let invocation_strategy = config.invocation_strategy();
         let next_gen =

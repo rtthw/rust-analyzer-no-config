@@ -146,11 +146,7 @@ pub(crate) fn handle_did_save_text_document(
     params: DidSaveTextDocumentParams,
 ) -> anyhow::Result<()> {
     if let Ok(vfs_path) = from_proto::vfs_path(&params.text_document.uri) {
-        let snap = state.snapshot();
-        let file_id = snap.vfs_path_to_file_id(&vfs_path)?;
-        let sr = snap.analysis.source_root_id(file_id)?;
-
-        if state.config.script_rebuild_on_save(Some(sr)) && state.build_deps_changed {
+        if state.config.script_rebuild_on_save() && state.build_deps_changed {
             state.build_deps_changed = false;
             state
                 .fetch_build_data_queue
@@ -186,10 +182,10 @@ pub(crate) fn handle_did_save_text_document(
             }
         }
 
-        if !state.config.check_on_save(Some(sr)) || run_flycheck(state, vfs_path) {
+        if !state.config.check_on_save() || run_flycheck(state, vfs_path) {
             return Ok(());
         }
-    } else if state.config.check_on_save(None) && state.config.flycheck_workspace(None) {
+    } else if state.config.check_on_save() && state.config.flycheck_workspace() {
         // No specific flycheck was triggered, so let's trigger all of them.
         for flycheck in state.flycheck.iter() {
             flycheck.restart_workspace(None);
@@ -293,8 +289,8 @@ fn run_flycheck(state: &mut GlobalState, vfs_path: VfsPath) -> bool {
     let file_id = state.vfs.read().0.file_id(&vfs_path);
     if let Some(file_id) = file_id {
         let world = state.snapshot();
-        let invocation_strategy = state.config.flycheck(None).invocation_strategy();
-        let may_flycheck_workspace = state.config.flycheck_workspace(None);
+        let invocation_strategy = state.config.flycheck().invocation_strategy();
+        let may_flycheck_workspace = state.config.flycheck_workspace();
 
         let task: Box<dyn FnOnce() -> ide::Cancellable<()> + Send + UnwindSafe> =
             match invocation_strategy {
@@ -493,7 +489,7 @@ pub(crate) fn handle_run_flycheck(
         return Ok(());
     }
     // No specific flycheck was triggered, so let's trigger all of them.
-    if state.config.flycheck_workspace(None) {
+    if state.config.flycheck_workspace() {
         for flycheck in state.flycheck.iter() {
             flycheck.restart_workspace(None);
         }

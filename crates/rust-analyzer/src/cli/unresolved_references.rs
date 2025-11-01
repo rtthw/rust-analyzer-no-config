@@ -35,7 +35,7 @@ impl flags::UnresolvedReferences {
             vec![],
             None,
         );
-        let cargo_config = config.cargo(None);
+        let cargo_config = config.cargo();
         let with_proc_macro_server = if let Some(p) = &self.proc_macro_srv {
             let path = vfs::AbsPathBuf::assert_utf8(std::env::current_dir()?.join(p));
             ProcMacroServerChoice::Explicit(path)
