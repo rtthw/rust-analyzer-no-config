@@ -984,9 +984,6 @@ pub struct Config {
     /// by receiving a `lsp_types::notification::DidChangeConfiguration`.
     client_config: (FullConfigInput, ConfigErrors),
 
-    /// Config node whose values apply to **every** Rust project.
-    user_config: Option<(GlobalWorkspaceLocalConfigInput, ConfigErrors)>,
-
     ratoml_file: FxHashMap<SourceRootId, (RatomlFile, ConfigErrors)>,
 
     /// Clone of the value that is stored inside a `GlobalState`.
@@ -1012,7 +1009,6 @@ impl fmt::Debug for Config {
             .field("snippets", &self.snippets)
             .field("client_info", &self.client_info)
             .field("client_config", &self.client_config)
-            .field("user_config", &self.user_config)
             .field("ratoml_file", &self.ratoml_file)
             .field("source_root_parent_map", &self.source_root_parent_map)
             .field("validation_errors", &self.validation_errors)
@@ -1031,16 +1027,6 @@ impl std::ops::Deref for Config {
 }
 
 impl Config {
-    /// Path to the user configuration dir. This can be seen as a generic way to define what would be `$XDG_CONFIG_HOME/rust-analyzer` in Linux.
-    pub fn user_config_dir_path() -> Option<AbsPathBuf> {
-        let user_config_path = if let Some(path) = env::var_os("__TEST_RA_USER_CONFIG_DIR") {
-            std::path::PathBuf::from(path)
-        } else {
-            dirs::config_dir()?.join("rust-analyzer")
-        };
-        Some(AbsPathBuf::assert_utf8(user_config_path))
-    }
-
     pub fn same_source_root_parent_map(
         &self,
         other: &Arc<FxHashMap<SourceRootId, SourceRootId>>,
@@ -1056,30 +1042,6 @@ impl Config {
         config.validation_errors = ConfigErrors::default();
 
         let mut should_update = false;
-
-        if let Some(change) = change.user_config_change {
-            tracing::info!("updating config from user config toml: {:#}", change);
-            if let Ok(table) = toml::from_str(&change) {
-                let mut toml_errors = vec![];
-                validate_toml_table(
-                    GlobalWorkspaceLocalConfigInput::FIELDS,
-                    &table,
-                    &mut String::new(),
-                    &mut toml_errors,
-                );
-                config.user_config = Some((
-                    GlobalWorkspaceLocalConfigInput::from_toml(table, &mut toml_errors),
-                    ConfigErrors(
-                        toml_errors
-                            .into_iter()
-                            .map(|(a, b)| ConfigErrorInner::Toml { config_key: a, error: b })
-                            .map(Arc::new)
-                            .collect(),
-                    ),
-                ));
-                should_update = true;
-            }
-        }
 
         if let Some(mut json) = change.client_config_change {
             tracing::info!("updating config from JSON: {:#}", json);
@@ -1275,7 +1237,6 @@ impl Config {
                 .1
                 .0
                 .iter()
-                .chain(config.user_config.as_ref().into_iter().flat_map(|it| it.1.0.iter()))
                 .chain(config.ratoml_file.values().flat_map(|it| it.1.0.iter()))
                 .chain(config.validation_errors.0.iter())
                 .cloned()
@@ -1302,7 +1263,6 @@ impl Config {
 
 #[derive(Default, Debug)]
 pub struct ConfigChange {
-    user_config_change: Option<Arc<str>>,
     client_config_change: Option<serde_json::Value>,
     ratoml_file_change:
         Option<FxHashMap<SourceRootId, (RatomlFileKind, VfsPath, Option<Arc<str>>)>>,
@@ -1319,11 +1279,6 @@ impl ConfigChange {
         self.ratoml_file_change
             .get_or_insert_with(Default::default)
             .insert(source_root, (RatomlFileKind::Crate, vfs_path, content))
-    }
-
-    pub fn change_user_config(&mut self, content: Option<Arc<str>>) {
-        assert!(self.user_config_change.is_none()); // Otherwise it is a double write.
-        self.user_config_change = content;
     }
 
     pub fn change_workspace_ratoml(
@@ -1618,7 +1573,6 @@ impl Config {
             client_config: (FullConfigInput::default(), ConfigErrors(vec![])),
             default_config: DEFAULT_CONFIG_DATA.get_or_init(|| Box::leak(Box::default())),
             source_root_parent_map: Arc::new(FxHashMap::default()),
-            user_config: None,
             detached_files: Default::default(),
             validation_errors: Default::default(),
             ratoml_file: Default::default(),
@@ -2992,12 +2946,6 @@ macro_rules! _impl_for_config_data {
                         return &v;
                     }
 
-                    if let Some((user_config, _)) = self.user_config.as_ref() {
-                        if let Some(v) = user_config.local.$field.as_ref() {
-                            return &v;
-                        }
-                    }
-
                     &self.default_config.local.$field
                 }
             )*
@@ -3027,12 +2975,6 @@ macro_rules! _impl_for_config_data {
                         return &v;
                     }
 
-                    if let Some((user_config, _)) = self.user_config.as_ref() {
-                        if let Some(v) = user_config.workspace.$field.as_ref() {
-                            return &v;
-                        }
-                    }
-
                     &self.default_config.workspace.$field
                 }
             )*
@@ -3051,13 +2993,6 @@ macro_rules! _impl_for_config_data {
                     if let Some(v) = self.client_config.0.global.$field.as_ref() {
                         return &v;
                     }
-
-                    if let Some((user_config, _)) = self.user_config.as_ref() {
-                        if let Some(v) = user_config.global.$field.as_ref() {
-                            return &v;
-                        }
-                    }
-
 
                     &self.default_config.global.$field
                 }
@@ -3235,31 +3170,6 @@ impl FullConfigInput {
     #[cfg(test)]
     fn manual() -> String {
         manual(&Self::schema_fields())
-    }
-}
-
-/// All of the config levels, all fields `Option<T>`, to describe fields that are actually set by
-/// some rust-analyzer.toml file or JSON blob. An empty rust-analyzer.toml corresponds to
-/// all fields being None.
-#[derive(Debug, Clone, Default)]
-struct GlobalWorkspaceLocalConfigInput {
-    global: GlobalConfigInput,
-    local: LocalConfigInput,
-    workspace: WorkspaceConfigInput,
-}
-
-impl GlobalWorkspaceLocalConfigInput {
-    const FIELDS: &'static [&'static [&'static str]] =
-        &[GlobalConfigInput::FIELDS, LocalConfigInput::FIELDS];
-    fn from_toml(
-        toml: toml::Table,
-        error_sink: &mut Vec<(String, toml::de::Error)>,
-    ) -> GlobalWorkspaceLocalConfigInput {
-        GlobalWorkspaceLocalConfigInput {
-            global: GlobalConfigInput::from_toml(&toml, error_sink),
-            local: LocalConfigInput::from_toml(&toml, error_sink),
-            workspace: WorkspaceConfigInput::from_toml(&toml, error_sink),
-        }
     }
 }
 

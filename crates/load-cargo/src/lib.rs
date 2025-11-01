@@ -150,7 +150,7 @@ pub fn load_workspace_into_db(
             .collect()
     };
 
-    let project_folders = ProjectFolders::new(std::slice::from_ref(&ws), None);
+    let project_folders = ProjectFolders::new(std::slice::from_ref(&ws));
     loader.set_config(vfs::loader::Config {
         load: project_folders.load,
         watch: vec![],
@@ -181,10 +181,7 @@ pub struct ProjectFolders {
 }
 
 impl ProjectFolders {
-    pub fn new(
-        workspaces: &[ProjectWorkspace],
-        user_config_dir_path: Option<&AbsPath>,
-    ) -> ProjectFolders {
+    pub fn new(workspaces: &[ProjectWorkspace]) -> ProjectFolders {
         let mut res = ProjectFolders::default();
         let mut fsc = FileSetConfig::builder();
         let mut local_filesets = vec![];
@@ -292,22 +289,6 @@ impl ProjectFolders {
                 local_filesets.push(fsc.len() as u64);
                 fsc.add_file_set(file_set_roots)
             }
-        }
-
-        if let Some(user_config_path) = user_config_dir_path {
-            let ratoml_path = {
-                let mut p = user_config_path.to_path_buf();
-                p.push("rust-analyzer.toml");
-                p
-            };
-
-            let file_set_roots = vec![VfsPath::from(ratoml_path.to_owned())];
-            let entry = vfs::loader::Entry::Files(vec![ratoml_path]);
-
-            res.watch.push(res.load.len());
-            res.load.push(entry);
-            local_filesets.push(fsc.len() as u64);
-            fsc.add_file_set(file_set_roots)
         }
 
         let fsc = fsc.build();

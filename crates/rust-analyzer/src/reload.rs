@@ -631,16 +631,6 @@ impl GlobalState {
                 }
             }
 
-            watchers.extend(
-                iter::once(Config::user_config_dir_path().as_deref())
-                    .chain(self.workspaces.iter().map(|ws| ws.manifest().map(ManifestPath::as_ref)))
-                    .flatten()
-                    .map(|glob_pattern| lsp_types::FileSystemWatcher {
-                        glob_pattern: lsp_types::GlobPattern::String(glob_pattern.to_string()),
-                        kind: None,
-                    }),
-            );
-
             let registration_options =
                 lsp_types::DidChangeWatchedFilesRegistrationOptions { watchers };
             let registration = lsp_types::Registration {
@@ -655,8 +645,7 @@ impl GlobalState {
         }
 
         let files_config = self.config.files();
-        let project_folders =
-            ProjectFolders::new(&self.workspaces, Config::user_config_dir_path().as_deref());
+        let project_folders = ProjectFolders::new(&self.workspaces);
 
         if (self.proc_macro_clients.len() < self.workspaces.len() || !same_workspaces)
             && self.config.expand_proc_macros()

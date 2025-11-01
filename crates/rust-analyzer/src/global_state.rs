@@ -439,13 +439,6 @@ impl GlobalState {
         {
             let config_change = {
                 let _p = span!(Level::INFO, "GlobalState::process_changes/config_change").entered();
-                let user_config_path = (|| {
-                    let mut p = Config::user_config_dir_path()?;
-                    p.push("rust-analyzer.toml");
-                    Some(p)
-                })();
-
-                let user_config_abs_path = user_config_path.as_deref();
 
                 let mut change = ConfigChange::default();
                 let db = self.analysis_host.raw_database();
@@ -466,10 +459,6 @@ impl GlobalState {
 
                 for (file_id, (change_kind, vfs_path)) in modified_ratoml_files {
                     tracing::info!(%vfs_path, ?change_kind, "Processing rust-analyzer.toml changes");
-                    if vfs_path.as_path() == user_config_abs_path {
-                        tracing::info!(%vfs_path, ?change_kind, "Use config rust-analyzer.toml changes");
-                        change.change_user_config(Some(db.file_text(file_id).text(db).clone()));
-                    }
 
                     // If change has been made to a ratoml file that
                     // belongs to a non-local source root, we will ignore it.
