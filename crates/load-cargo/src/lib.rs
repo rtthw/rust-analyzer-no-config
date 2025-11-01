@@ -124,9 +124,7 @@ pub fn load_workspace_into_db(
             let contents = loader.load_sync(path);
             let path = vfs::VfsPath::from(path.to_path_buf());
             vfs.set_file_contents(path.clone(), contents);
-            vfs.file_id(&path).and_then(|(file_id, excluded)| {
-                (excluded == vfs::FileExcluded::No).then_some(file_id)
-            })
+            vfs.file_id(&path)
         },
         extra_env,
     );
@@ -155,7 +153,7 @@ pub fn load_workspace_into_db(
             .collect()
     };
 
-    let project_folders = ProjectFolders::new(std::slice::from_ref(&ws), &[], None);
+    let project_folders = ProjectFolders::new(std::slice::from_ref(&ws), None);
     loader.set_config(vfs::loader::Config {
         load: project_folders.load,
         watch: vec![],
@@ -188,7 +186,6 @@ pub struct ProjectFolders {
 impl ProjectFolders {
     pub fn new(
         workspaces: &[ProjectWorkspace],
-        global_excludes: &[AbsPathBuf],
         user_config_dir_path: Option<&AbsPath>,
     ) -> ProjectFolders {
         let mut res = ProjectFolders::default();
@@ -199,7 +196,7 @@ impl ProjectFolders {
         // Depending on the project setup, we can have duplicated source roots, or for example in
         // the case of the rustc workspace, we can end up with two source roots that are almost the
         // same but not quite, like:
-        // PackageRoot { is_local: false, include: [AbsPathBuf(".../rust/src/tools/miri/cargo-miri")], exclude: [] }
+        // PackageRoot { is_local: false, include: [AbsPathBuf(".../rust/src/tools/miri/cargo-miri")], }
         // PackageRoot {
         //     is_local: true,
         //     include: [AbsPathBuf(".../rust/src/tools/miri/cargo-miri"), AbsPathBuf(".../rust/build/x86_64-pc-windows-msvc/stage0-tools/x86_64-pc-windows-msvc/release/build/cargo-miri-85801cd3d2d1dae4/out")],
@@ -267,15 +264,6 @@ impl ProjectFolders {
                 dirs.extensions.push("toml".into());
                 dirs.include.extend(root.include);
                 dirs.exclude.extend(root.exclude);
-                for excl in global_excludes {
-                    if dirs
-                        .include
-                        .iter()
-                        .any(|incl| incl.starts_with(excl) || excl.starts_with(incl))
-                    {
-                        dirs.exclude.push(excl.clone());
-                    }
-                }
 
                 vfs::loader::Entry::Directories(dirs)
             };

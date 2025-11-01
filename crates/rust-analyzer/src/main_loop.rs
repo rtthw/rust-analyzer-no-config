@@ -571,9 +571,6 @@ impl GlobalState {
             self.mem_docs
                 .iter()
                 .map(|path| vfs.file_id(path).unwrap())
-                .filter_map(|(file_id, excluded)| {
-                    (excluded == vfs::FileExcluded::No).then_some(file_id)
-                })
                 .filter(|&file_id| {
                     let source_root_id = db.file_source_root(file_id).source_root_id(db);
                     let source_root = db.source_root(source_root_id).source_root(db);
@@ -659,9 +656,6 @@ impl GlobalState {
             .mem_docs
             .iter()
             .map(|path| self.vfs.read().0.file_id(path).unwrap())
-            .filter_map(|(file_id, excluded)| {
-                (excluded == vfs::FileExcluded::No).then_some(file_id)
-            })
             .filter(|&file_id| {
                 let source_root_id = db.file_source_root(file_id).source_root_id(db);
                 let source_root = db.source_root(source_root_id).source_root(db);
@@ -922,10 +916,7 @@ impl GlobalState {
                 self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |sender| {
                     let _p = tracing::info_span!("GlobalState::check_if_indexed").entered();
                     tracing::debug!(?uri, "handling uri");
-                    let Some(id) = from_proto::file_id(&snap, &uri).expect("unable to get FileId")
-                    else {
-                        return;
-                    };
+                    let id = from_proto::file_id(&snap, &uri).expect("unable to get FileId");
                     if let Ok(crates) = &snap.analysis.crates_for(id) {
                         if crates.is_empty() {
                             if snap.config.discover_workspace_config().is_some() {
@@ -1039,7 +1030,7 @@ impl GlobalState {
                 );
                 for diag in diagnostics {
                     match url_to_file_id(&self.vfs.read().0, &diag.url) {
-                        Ok(Some(file_id)) => self.diagnostics.add_check_diagnostic(
+                        Ok(file_id) => self.diagnostics.add_check_diagnostic(
                             id,
                             generation,
                             &package_id,
@@ -1047,7 +1038,6 @@ impl GlobalState {
                             diag.diagnostic,
                             diag.fix,
                         ),
-                        Ok(None) => {}
                         Err(err) => {
                             error!(
                                 "flycheck {id}: File with cargo diagnostic not found in VFS: {}",

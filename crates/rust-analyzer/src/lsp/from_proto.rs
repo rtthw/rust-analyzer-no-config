@@ -9,7 +9,7 @@ use vfs::AbsPathBuf;
 use crate::{
     global_state::GlobalStateSnapshot,
     line_index::{LineIndex, PositionEncoding},
-    lsp_ext, try_default,
+    lsp_ext,
 };
 
 pub(crate) fn abs_path(url: &lsp_types::Url) -> anyhow::Result<AbsPathBuf> {
@@ -62,44 +62,37 @@ pub(crate) fn text_range(
     }
 }
 
-/// Returns `None` if the file was excluded.
-pub(crate) fn file_id(
-    snap: &GlobalStateSnapshot,
-    url: &lsp_types::Url,
-) -> anyhow::Result<Option<FileId>> {
+pub(crate) fn file_id(snap: &GlobalStateSnapshot, url: &lsp_types::Url) -> anyhow::Result<FileId> {
     snap.url_to_file_id(url)
 }
 
-/// Returns `None` if the file was excluded.
 pub(crate) fn file_position(
     snap: &GlobalStateSnapshot,
     tdpp: lsp_types::TextDocumentPositionParams,
-) -> anyhow::Result<Option<FilePosition>> {
-    let file_id = try_default!(file_id(snap, &tdpp.text_document.uri)?);
+) -> anyhow::Result<FilePosition> {
+    let file_id = file_id(snap, &tdpp.text_document.uri)?;
     let line_index = snap.file_line_index(file_id)?;
     let offset = offset(&line_index, tdpp.position)?;
-    Ok(Some(FilePosition { file_id, offset }))
+    Ok(FilePosition { file_id, offset })
 }
 
-/// Returns `None` if the file was excluded.
 pub(crate) fn file_range(
     snap: &GlobalStateSnapshot,
     text_document_identifier: &lsp_types::TextDocumentIdentifier,
     range: lsp_types::Range,
-) -> anyhow::Result<Option<FileRange>> {
+) -> anyhow::Result<FileRange> {
     file_range_uri(snap, &text_document_identifier.uri, range)
 }
 
-/// Returns `None` if the file was excluded.
 pub(crate) fn file_range_uri(
     snap: &GlobalStateSnapshot,
     document: &lsp_types::Url,
     range: lsp_types::Range,
-) -> anyhow::Result<Option<FileRange>> {
-    let file_id = try_default!(file_id(snap, document)?);
+) -> anyhow::Result<FileRange> {
+    let file_id = file_id(snap, document)?;
     let line_index = snap.file_line_index(file_id)?;
     let range = text_range(&line_index, range)?;
-    Ok(Some(FileRange { file_id, range }))
+    Ok(FileRange { file_id, range })
 }
 
 pub(crate) fn assist_kind(kind: lsp_types::CodeActionKind) -> Option<AssistKind> {
@@ -116,7 +109,6 @@ pub(crate) fn assist_kind(kind: lsp_types::CodeActionKind) -> Option<AssistKind>
     Some(assist_kind)
 }
 
-/// Returns `None` if the file was excluded.
 pub(crate) fn annotation(
     snap: &GlobalStateSnapshot,
     range: lsp_types::Range,
@@ -130,7 +122,7 @@ pub(crate) fn annotation(
                 return Ok(None);
             }
             let pos @ FilePosition { file_id, .. } =
-                try_default!(file_position(snap, params.text_document_position_params)?);
+                file_position(snap, params.text_document_position_params)?;
             let line_index = snap.file_line_index(file_id)?;
 
             Ok(Annotation {
@@ -142,7 +134,7 @@ pub(crate) fn annotation(
             if snap.url_file_version(&params.text_document.uri) != Some(data.version) {
                 return Ok(None);
             }
-            let pos @ FilePosition { file_id, .. } = try_default!(file_position(snap, params)?);
+            let pos @ FilePosition { file_id, .. } = file_position(snap, params)?;
             let line_index = snap.file_line_index(file_id)?;
 
             Ok(Annotation {

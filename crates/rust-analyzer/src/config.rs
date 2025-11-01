@@ -91,13 +91,6 @@ config_data! {
         completion_snippets_custom: FxIndexMap<String, SnippetDef> =
             Config::completion_snippets_default(),
 
-        /// List of files to ignore
-        ///
-        /// These paths (file/directories) will be ignored by rust-analyzer. They are relative to
-        /// the workspace root, and globs are not supported. You may also need to add the folders to
-        /// Code's `files.watcherExclude`.
-        files_exclude | files_excludeDirs: Vec<Utf8PathBuf> = vec![],
-
         /// If this is `true`, when "Goto Implementations" and in "Implementations" lens, are triggered on a `struct` or `enum` or `union`, we filter out trait implementations that originate from `derive`s above the type.
         gotoImplementations_filterAdjacentDerives: bool = false,
 
@@ -1520,7 +1513,6 @@ impl HoverActionsConfig {
 #[derive(Debug, Clone)]
 pub struct FilesConfig {
     pub watcher: FilesWatcher,
-    pub exclude: Vec<AbsPathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -2066,15 +2058,9 @@ impl Config {
     }
 
     fn discovered_projects(&self) -> Vec<ManifestOrProjectJson> {
-        let exclude_dirs: Vec<_> =
-            self.files_exclude().iter().map(|p| self.root_path.join(p)).collect();
-
         let mut projects = vec![];
         for fs_proj in &self.discovered_projects_from_filesystem {
             let manifest_path = fs_proj.manifest_path();
-            if exclude_dirs.iter().any(|p| manifest_path.starts_with(p)) {
-                continue;
-            }
 
             let buf: Utf8PathBuf = manifest_path.to_path_buf().into();
             projects.push(ManifestOrProjectJson::Manifest(buf));
@@ -2200,12 +2186,7 @@ impl Config {
                 }
                 _ => FilesWatcher::Server,
             },
-            exclude: self.excluded().collect(),
         }
-    }
-
-    pub fn excluded(&self) -> impl Iterator<Item = AbsPathBuf> + use<'_> {
-        self.files_exclude().iter().map(|it| self.root_path.join(it))
     }
 
     pub fn notifications(&self) -> NotificationsConfig {

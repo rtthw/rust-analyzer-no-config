@@ -655,11 +655,8 @@ impl GlobalState {
         }
 
         let files_config = self.config.files();
-        let project_folders = ProjectFolders::new(
-            &self.workspaces,
-            &files_config.exclude,
-            Config::user_config_dir_path().as_deref(),
-        );
+        let project_folders =
+            ProjectFolders::new(&self.workspaces, Config::user_config_dir_path().as_deref());
 
         if (self.proc_macro_clients.len() < self.workspaces.len() || !same_workspaces)
             && self.config.expand_proc_macros()
@@ -760,9 +757,7 @@ impl GlobalState {
                 self.crate_graph_file_dependencies.insert(vfs_path.clone());
                 let file_id = vfs.file_id(&vfs_path);
                 self.incomplete_crate_graph |= file_id.is_none();
-                file_id.and_then(|(file_id, excluded)| {
-                    (excluded == vfs::FileExcluded::No).then_some(file_id)
-                })
+                file_id
             };
 
             ws_to_crate_graph(&self.workspaces, self.config.extra_env(None), load)

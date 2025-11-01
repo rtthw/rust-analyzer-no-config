@@ -27,7 +27,6 @@ use lsp_types::{
     request::{
         CodeActionRequest, Completion, Formatting, GotoTypeDefinition, HoverRequest,
         InlayHintRequest, InlayHintResolveRequest, RangeFormatting, WillRenameFiles,
-        WorkspaceSymbolRequest,
     },
 };
 use rust_analyzer::lsp::ext::{OnEnter, Runnables, RunnablesParams};
@@ -1403,84 +1402,4 @@ use crate::old_folder::nested::foo as bar;
           ]
         }),
     );
-}
-
-#[test]
-fn test_exclude_config_works() {
-    if skip_slow_tests() {
-        return;
-    }
-
-    let server = Project::with_fixture(
-        r#"
-//- /foo/Cargo.toml
-[package]
-name = "foo"
-version = "0.0.0"
-
-//- /foo/src/lib.rs
-pub fn foo() {}
-
-//- /bar/Cargo.toml
-[package]
-name = "bar"
-version = "0.0.0"
-
-[dependencies]
-foo = { path = "../foo" }
-
-//- /bar/src/lib.rs
-"#,
-    )
-    .root("foo")
-    .root("bar")
-    .root("baz")
-    .with_config(json!({
-       "files": {
-           "exclude": ["foo"]
-        }
-    }))
-    .server()
-    .wait_until_workspace_is_loaded();
-
-    server.request::<WorkspaceSymbolRequest>(Default::default(), json!([]));
-
-    let server = Project::with_fixture(
-        r#"
-//- /foo/Cargo.toml
-[package]
-name = "foo"
-version = "0.0.0"
-
-//- /foo/src/lib.rs
-pub fn foo() {}
-
-//- /bar/Cargo.toml
-[package]
-name = "bar"
-version = "0.0.0"
-
-//- /bar/src/lib.rs
-pub fn bar() {}
-
-//- /baz/Cargo.toml
-[package]
-name = "baz"
-version = "0.0.0"
-
-//- /baz/src/lib.rs
-"#,
-    )
-    .root("foo")
-    .root("bar")
-    .root("baz")
-    .with_config(json!({
-       "files": {
-           "exclude": ["foo", "bar"]
-        }
-    }))
-    .server()
-    .wait_until_workspace_is_loaded();
-
-    server.request::<WorkspaceSymbolRequest>(Default::default(), json!([]));
 }
