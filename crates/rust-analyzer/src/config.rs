@@ -3,7 +3,7 @@
 //! Of particular interest is the `feature_flags` hash map: while other fields
 //! configure the server itself, feature flags are passed into analysis, and
 //! tweak things like automatic insertion of `()` in completions.
-use std::{env, fmt, iter, ops::Not, sync::OnceLock};
+use std::fmt;
 
 use cfg::{CfgAtom, CfgDiff};
 use hir::Symbol;
@@ -27,7 +27,7 @@ use project_model::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use semver::Version;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use vfs::{AbsPath, AbsPathBuf};
 
 use crate::{
@@ -52,885 +52,6 @@ pub enum MaxSubstitutionLength {
     Limit(usize),
 }
 
-// Defines the server-side configuration of the rust-analyzer. We generate *parts* of VS Code's
-// `package.json` config from this. Run `cargo test` to re-generate that file.
-//
-// However, editor specific config, which the server doesn't know about, should be specified
-// directly in `package.json`.
-//
-// To deprecate an option by replacing it with another name use `new_name` | `old_name` so that we
-// keep parsing the old name.
-config_data! {
-    /// Configs that apply on a workspace-wide scope. There are 2 levels on which a global
-    /// configuration can be configured
-    ///
-    /// 1. `rust-analyzer.toml` file under user's config directory (e.g
-    ///    ~/.config/rust-analyzer/rust-analyzer.toml)
-    /// 2. Client's own configurations (e.g `settings.json` on VS Code)
-    ///
-    /// A config is searched for by traversing a "config tree" in a bottom up fashion. It is chosen
-    /// by the nearest first principle.
-    global: struct GlobalDefaultConfigData <- GlobalConfigInput -> {
-        /// Warm up caches on project load.
-        cachePriming_enable: bool = true,
-
-        /// How many worker threads to handle priming caches. The default `0` means to pick
-        /// automatically.
-        cachePriming_numThreads: NumThreads = NumThreads::Physical,
-
-        /// If this is `true`, when "Goto Implementations" and in "Implementations" lens, are triggered on a `struct` or `enum` or `union`, we filter out trait implementations that originate from `derive`s above the type.
-        gotoImplementations_filterAdjacentDerives: bool = false,
-
-        /// Highlight related return values while the cursor is on any `match`, `if`, or match arm
-        /// arrow (`=>`).
-        highlightRelated_branchExitPoints_enable: bool = true,
-
-        /// Highlight related references while the cursor is on `break`, `loop`, `while`, or `for`
-        /// keywords.
-        highlightRelated_breakPoints_enable: bool = true,
-
-        /// Highlight all captures of a closure while the cursor is on the `|` or move keyword of a closure.
-        highlightRelated_closureCaptures_enable: bool = true,
-
-        /// Highlight all exit points while the cursor is on any `return`, `?`, `fn`, or return type
-        /// arrow (`->`).
-        highlightRelated_exitPoints_enable: bool = true,
-
-        /// Highlight related references while the cursor is on any identifier.
-        highlightRelated_references_enable: bool = true,
-
-        /// Highlight all break points for a loop or block context while the cursor is on any
-        /// `async` or `await` keywords.
-        highlightRelated_yieldPoints_enable: bool = true,
-
-        /// Show `Debug` action. Only applies when `#rust-analyzer.hover.actions.enable#` is set.
-        hover_actions_debug_enable: bool = true,
-
-        /// Show HoverActions in Rust files.
-        hover_actions_enable: bool = true,
-
-        /// Show `Go to Type Definition` action. Only applies when
-        /// `#rust-analyzer.hover.actions.enable#` is set.
-        hover_actions_gotoTypeDef_enable: bool = true,
-
-        /// Show `Implementations` action. Only applies when `#rust-analyzer.hover.actions.enable#`
-        /// is set.
-        hover_actions_implementations_enable: bool = true,
-
-        /// Show `References` action. Only applies when `#rust-analyzer.hover.actions.enable#` is
-        /// set.
-        hover_actions_references_enable: bool = false,
-
-        /// Show `Run` action. Only applies when `#rust-analyzer.hover.actions.enable#` is set.
-        hover_actions_run_enable: bool = true,
-
-        /// Show `Update Test` action. Only applies when `#rust-analyzer.hover.actions.enable#` and
-        /// `#rust-analyzer.hover.actions.run.enable#` are set.
-        hover_actions_updateTest_enable: bool = true,
-
-        /// Show documentation on hover.
-        hover_documentation_enable: bool = true,
-
-        /// Show keyword hover popups. Only applies when
-        /// `#rust-analyzer.hover.documentation.enable#` is set.
-        hover_documentation_keywords_enable: bool = true,
-
-        /// Show drop glue information on hover.
-        hover_dropGlue_enable: bool = true,
-
-        /// Use markdown syntax for links on hover.
-        hover_links_enable: bool = true,
-
-        /// Show what types are used as generic arguments in calls etc. on hover, and limit the max
-        /// length to show such types, beyond which they will be shown with ellipsis.
-        ///
-        /// This can take three values: `null` means "unlimited", the string `"hide"` means to not
-        /// show generic substitutions at all, and a number means to limit them to X characters.
-        ///
-        /// The default is 20 characters.
-        hover_maxSubstitutionLength: Option<MaxSubstitutionLength> =
-            Some(MaxSubstitutionLength::Limit(20)),
-
-        /// How to render the align information in a memory layout hover.
-        hover_memoryLayout_alignment: Option<MemoryLayoutHoverRenderKindDef> =
-            Some(MemoryLayoutHoverRenderKindDef::Hexadecimal),
-
-        /// Show memory layout data on hover.
-        hover_memoryLayout_enable: bool = true,
-
-        /// How to render the niche information in a memory layout hover.
-        hover_memoryLayout_niches: Option<bool> = Some(false),
-
-        /// How to render the offset information in a memory layout hover.
-        hover_memoryLayout_offset: Option<MemoryLayoutHoverRenderKindDef> =
-            Some(MemoryLayoutHoverRenderKindDef::Hexadecimal),
-
-        /// How to render the padding information in a memory layout hover.
-        hover_memoryLayout_padding: Option<MemoryLayoutHoverRenderKindDef> = None,
-
-        /// How to render the size information in a memory layout hover.
-        hover_memoryLayout_size: Option<MemoryLayoutHoverRenderKindDef> =
-            Some(MemoryLayoutHoverRenderKindDef::Both),
-
-        /// How many variants of an enum to display when hovering on. Show none if empty.
-        hover_show_enumVariants: Option<usize> = Some(5),
-
-        /// How many fields of a struct, variant or union to display when hovering on. Show none if
-        /// empty.
-        hover_show_fields: Option<usize> = Some(5),
-
-        /// How many associated items of a trait to display when hovering a trait.
-        hover_show_traitAssocItems: Option<usize> = None,
-
-        /// Show inlay type hints for binding modes.
-        inlayHints_bindingModeHints_enable: bool = false,
-
-        /// Show inlay type hints for method chains.
-        inlayHints_chainingHints_enable: bool = true,
-
-        /// Show inlay hints after a closing `}` to indicate what item it belongs to.
-        inlayHints_closingBraceHints_enable: bool = true,
-
-        /// Minimum number of lines required before the `}` until the hint is shown (set to 0 or 1
-        /// to always show them).
-        inlayHints_closingBraceHints_minLines: usize = 25,
-
-        /// Show inlay hints for closure captures.
-        inlayHints_closureCaptureHints_enable: bool = false,
-
-        /// Show inlay type hints for return types of closures.
-        inlayHints_closureReturnTypeHints_enable: ClosureReturnTypeHintsDef =
-            ClosureReturnTypeHintsDef::Never,
-
-        /// Closure notation in type and chaining inlay hints.
-        inlayHints_closureStyle: ClosureStyle = ClosureStyle::ImplFn,
-
-        /// Show enum variant discriminant hints.
-        inlayHints_discriminantHints_enable: DiscriminantHintsDef =
-            DiscriminantHintsDef::Never,
-
-        /// Disable reborrows in expression adjustments inlay hints.
-        ///
-        /// Reborrows are a pair of a builtin deref then borrow, i.e. `&*`. They are inserted by the compiler but are mostly useless to the programmer.
-        ///
-        /// Note: if the deref is not builtin (an overloaded deref), or the borrow is `&raw const`/`&raw mut`, they are not removed.
-        inlayHints_expressionAdjustmentHints_disableReborrows: bool =
-            true,
-
-        /// Show inlay hints for type adjustments.
-        inlayHints_expressionAdjustmentHints_enable: AdjustmentHintsDef =
-            AdjustmentHintsDef::Never,
-
-        /// Hide inlay hints for type adjustments outside of `unsafe` blocks.
-        inlayHints_expressionAdjustmentHints_hideOutsideUnsafe: bool = false,
-
-        /// Show inlay hints as postfix ops (`.*` instead of `*`, etc).
-        inlayHints_expressionAdjustmentHints_mode: AdjustmentHintsModeDef =
-            AdjustmentHintsModeDef::Prefix,
-
-        /// Show const generic parameter name inlay hints.
-        inlayHints_genericParameterHints_const_enable: bool = true,
-
-        /// Show generic lifetime parameter name inlay hints.
-        inlayHints_genericParameterHints_lifetime_enable: bool = false,
-
-        /// Show generic type parameter name inlay hints.
-        inlayHints_genericParameterHints_type_enable: bool = false,
-
-        /// Show implicit drop hints.
-        inlayHints_implicitDrops_enable: bool = false,
-
-        /// Show inlay hints for the implied type parameter `Sized` bound.
-        inlayHints_implicitSizedBoundHints_enable: bool = false,
-
-        /// Show inlay type hints for elided lifetimes in function signatures.
-        inlayHints_lifetimeElisionHints_enable: LifetimeElisionDef = LifetimeElisionDef::Never,
-
-        /// Prefer using parameter names as the name for elided lifetime hints if possible.
-        inlayHints_lifetimeElisionHints_useParameterNames: bool = false,
-
-        /// Maximum length for inlay hints. Set to null to have an unlimited length.
-        ///
-        /// **Note:** This is mostly a hint, and we don't guarantee to strictly follow the limit.
-        inlayHints_maxLength: Option<usize> = Some(25),
-
-        /// Show function parameter name inlay hints at the call site.
-        inlayHints_parameterHints_enable: bool = true,
-
-        /// Show exclusive range inlay hints.
-        inlayHints_rangeExclusiveHints_enable: bool = false,
-
-        /// Show inlay hints for compiler inserted reborrows.
-        ///
-        /// This setting is deprecated in favor of
-        /// #rust-analyzer.inlayHints.expressionAdjustmentHints.enable#.
-        inlayHints_reborrowHints_enable: ReborrowHintsDef = ReborrowHintsDef::Never,
-
-        /// Whether to render leading colons for type hints, and trailing colons for parameter hints.
-        inlayHints_renderColons: bool = true,
-
-        /// Show inlay type hints for variables.
-        inlayHints_typeHints_enable: bool = true,
-
-        /// Hide inlay type hints for `let` statements that initialize to a closure.
-        ///
-        /// Only applies to closures with blocks, same as
-        /// `#rust-analyzer.inlayHints.closureReturnTypeHints.enable#`.
-        inlayHints_typeHints_hideClosureInitialization: bool = false,
-
-        /// Hide inlay parameter type hints for closures.
-        inlayHints_typeHints_hideClosureParameter: bool = false,
-
-        /// Hide inlay type hints for constructors.
-        inlayHints_typeHints_hideNamedConstructor: bool = false,
-
-        /// Enable the experimental support for interpreting tests.
-        interpret_tests: bool = false,
-
-        /// Join lines merges consecutive declaration and initialization of an assignment.
-        joinLines_joinAssignments: bool = true,
-
-        /// Join lines inserts else between consecutive ifs.
-        joinLines_joinElseIf: bool = true,
-
-        /// Join lines removes trailing commas.
-        joinLines_removeTrailingComma: bool = true,
-
-        /// Join lines unwraps trivial blocks.
-        joinLines_unwrapTrivialBlock: bool = true,
-
-        /// Show `Debug` lens. Only applies when `#rust-analyzer.lens.enable#` is set.
-        lens_debug_enable: bool = true,
-
-        /// Show CodeLens in Rust files.
-        lens_enable: bool = true,
-
-        /// Show `Implementations` lens. Only applies when `#rust-analyzer.lens.enable#` is set.
-        lens_implementations_enable: bool = true,
-
-        /// Where to render annotations.
-        lens_location: AnnotationLocation = AnnotationLocation::AboveName,
-
-        /// Show `References` lens for Struct, Enum, and Union. Only applies when
-        /// `#rust-analyzer.lens.enable#` is set.
-        lens_references_adt_enable: bool = false,
-
-        /// Show `References` lens for Enum Variants. Only applies when
-        /// `#rust-analyzer.lens.enable#` is set.
-        lens_references_enumVariant_enable: bool = false,
-
-        /// Show `Method References` lens. Only applies when `#rust-analyzer.lens.enable#` is set.
-        lens_references_method_enable: bool = false,
-
-        /// Show `References` lens for Trait. Only applies when `#rust-analyzer.lens.enable#` is
-        /// set.
-        lens_references_trait_enable: bool = false,
-
-        /// Show `Run` lens. Only applies when `#rust-analyzer.lens.enable#` is set.
-        lens_run_enable: bool = true,
-
-        /// Show `Update Test` lens. Only applies when `#rust-analyzer.lens.enable#` and
-        /// `#rust-analyzer.lens.run.enable#` are set.
-        lens_updateTest_enable: bool = true,
-
-        /// Disable project auto-discovery in favor of explicitly specified set of projects.
-        ///
-        /// Elements must be paths pointing to `Cargo.toml`, `rust-project.json`, `.rs` files (which
-        /// will be treated as standalone files) or JSON objects in `rust-project.json` format.
-        linkedProjects: Vec<ManifestOrProjectJson> = vec![],
-
-        /// Number of syntax trees rust-analyzer keeps in memory. Defaults to 128.
-        lru_capacity: Option<u16> = None,
-
-        /// The LRU capacity of the specified queries.
-        lru_query_capacities: FxHashMap<Box<str>, u16> = FxHashMap::default(),
-
-        /// Show `can't find Cargo.toml` error message.
-        notifications_cargoTomlNotFound: bool = true,
-
-        /// The number of worker threads in the main loop. The default `null` means to pick
-        /// automatically.
-        numThreads: Option<NumThreads> = None,
-
-        /// Expand attribute macros. Requires `#rust-analyzer.procMacro.enable#` to be set.
-        procMacro_attributes_enable: bool = true,
-
-        /// Enable support for procedural macros, implies `#rust-analyzer.cargo.buildScripts.enable#`.
-        procMacro_enable: bool = true,
-
-        /// Internal config, path to proc-macro server executable.
-        procMacro_server: Option<Utf8PathBuf> = None,
-
-        /// The path where to save memory profiling output.
-        ///
-        /// **Note:** Memory profiling is not enabled by default in rust-analyzer builds, you need to build
-        /// from source for it.
-        profiling_memoryProfile: Option<Utf8PathBuf> = None,
-
-        /// Exclude imports from find-all-references.
-        references_excludeImports: bool = false,
-
-        /// Exclude tests from find-all-references and call-hierarchy.
-        references_excludeTests: bool = false,
-
-        /// Use semantic tokens for comments.
-        ///
-        /// In some editors (e.g. vscode) semantic tokens override other highlighting grammars.
-        /// By disabling semantic tokens for comments, other grammars can be used to highlight
-        /// their contents.
-        semanticHighlighting_comments_enable: bool = true,
-
-        /// Inject additional highlighting into doc comments.
-        ///
-        /// When enabled, rust-analyzer will highlight rust source in doc comments as well as intra
-        /// doc links.
-        semanticHighlighting_doc_comment_inject_enable: bool = true,
-
-        /// Emit non-standard tokens and modifiers
-        ///
-        /// When enabled, rust-analyzer will emit tokens and modifiers that are not part of the
-        /// standard set of semantic tokens.
-        semanticHighlighting_nonStandardTokens: bool = true,
-
-        /// Use semantic tokens for operators.
-        ///
-        /// When disabled, rust-analyzer will emit semantic tokens only for operator tokens when
-        /// they are tagged with modifiers.
-        semanticHighlighting_operator_enable: bool = true,
-
-        /// Use specialized semantic tokens for operators.
-        ///
-        /// When enabled, rust-analyzer will emit special token types for operator tokens instead
-        /// of the generic `operator` token type.
-        semanticHighlighting_operator_specialization_enable: bool = false,
-
-        /// Use semantic tokens for punctuation.
-        ///
-        /// When disabled, rust-analyzer will emit semantic tokens only for punctuation tokens when
-        /// they are tagged with modifiers or have a special role.
-        semanticHighlighting_punctuation_enable: bool = false,
-
-        /// When enabled, rust-analyzer will emit a punctuation semantic token for the `!` of macro
-        /// calls.
-        semanticHighlighting_punctuation_separate_macro_bang: bool = false,
-
-        /// Use specialized semantic tokens for punctuation.
-        ///
-        /// When enabled, rust-analyzer will emit special token types for punctuation tokens instead
-        /// of the generic `punctuation` token type.
-        semanticHighlighting_punctuation_specialization_enable: bool = false,
-
-        /// Use semantic tokens for strings.
-        ///
-        /// In some editors (e.g. vscode) semantic tokens override other highlighting grammars.
-        /// By disabling semantic tokens for strings, other grammars can be used to highlight
-        /// their contents.
-        semanticHighlighting_strings_enable: bool = true,
-
-        /// Show full signature of the callable. Only shows parameters if disabled.
-        signatureInfo_detail: SignatureDetail = SignatureDetail::Full,
-
-        /// Show documentation.
-        signatureInfo_documentation_enable: bool = true,
-
-        /// Specify the characters allowed to invoke special on typing triggers.
-        ///
-        /// - typing `=` after `let` tries to smartly add `;` if `=` is followed by an existing
-        ///   expression
-        /// - typing `=` between two expressions adds `;` when in statement position
-        /// - typing `=` to turn an assignment into an equality comparison removes `;` when in
-        ///   expression position
-        /// - typing `.` in a chain method call auto-indents
-        /// - typing `{` or `(` in front of an expression inserts a closing `}` or `)` after the
-        ///   expression
-        /// - typing `{` in a use item adds a closing `}` in the right place
-        /// - typing `>` to complete a return type `->` will insert a whitespace after it
-        /// - typing `<` in a path or type position inserts a closing `>` after the path or type.
-        typing_triggerChars: Option<String> = Some("=.".to_owned()),
-
-
-        /// Enables automatic discovery of projects using [`DiscoverWorkspaceConfig::command`].
-        ///
-        /// [`DiscoverWorkspaceConfig`] also requires setting `progress_label` and `files_to_watch`.
-        /// `progress_label` is used for the title in progress indicators, whereas `files_to_watch`
-        /// is used to determine which build system-specific files should be watched in order to
-        /// reload rust-analyzer.
-        ///
-        /// Below is an example of a valid configuration:
-        /// ```json
-        /// "rust-analyzer.workspace.discoverConfig": {
-        ///     "command": [
-        ///         "rust-project",
-        ///         "develop-json"
-        ///     ],
-        ///     "progressLabel": "rust-analyzer",
-        ///     "filesToWatch": [
-        ///         "BUCK"
-        ///     ]
-        /// }
-        /// ```
-        ///
-        /// ## On `DiscoverWorkspaceConfig::command`
-        ///
-        /// **Warning**: This format is provisional and subject to change.
-        ///
-        /// [`DiscoverWorkspaceConfig::command`] *must* return a JSON object corresponding to
-        /// `DiscoverProjectData::Finished`:
-        ///
-        /// ```norun
-        /// #[derive(Debug, Clone, Deserialize, Serialize)]
-        /// #[serde(tag = "kind")]
-        /// #[serde(rename_all = "snake_case")]
-        /// enum DiscoverProjectData {
-        ///     Finished { buildfile: Utf8PathBuf, project: ProjectJsonData },
-        ///     Error { error: String, source: Option<String> },
-        ///     Progress { message: String },
-        /// }
-        /// ```
-        ///
-        /// As JSON, `DiscoverProjectData::Finished` is:
-        ///
-        /// ```json
-        /// {
-        ///     // the internally-tagged representation of the enum.
-        ///     "kind": "finished",
-        ///     // the file used by a non-Cargo build system to define
-        ///     // a package or target.
-        ///     "buildfile": "rust-analyzer/BUILD",
-        ///     // the contents of a rust-project.json, elided for brevity
-        ///     "project": {
-        ///         "sysroot": "foo",
-        ///         "crates": []
-        ///     }
-        /// }
-        /// ```
-        ///
-        /// It is encouraged, but not required, to use the other variants on `DiscoverProjectData`
-        /// to provide a more polished end-user experience.
-        ///
-        /// `DiscoverWorkspaceConfig::command` may *optionally* include an `{arg}`, which will be
-        /// substituted with the JSON-serialized form of the following enum:
-        ///
-        /// ```norun
-        /// #[derive(PartialEq, Clone, Debug, Serialize)]
-        /// #[serde(rename_all = "camelCase")]
-        /// pub enum DiscoverArgument {
-        ///    Path(AbsPathBuf),
-        ///    Buildfile(AbsPathBuf),
-        /// }
-        /// ```
-        ///
-        /// The JSON representation of `DiscoverArgument::Path` is:
-        ///
-        /// ```json
-        /// {
-        ///     "path": "src/main.rs"
-        /// }
-        /// ```
-        ///
-        /// Similarly, the JSON representation of `DiscoverArgument::Buildfile` is:
-        ///
-        /// ```json
-        /// {
-        ///     "buildfile": "BUILD"
-        /// }
-        /// ```
-        ///
-        /// `DiscoverArgument::Path` is used to find and generate a `rust-project.json`, and
-        /// therefore, a workspace, whereas `DiscoverArgument::buildfile` is used to to update an
-        /// existing workspace. As a reference for implementors, buck2's `rust-project` will likely
-        /// be useful: https://github.com/facebook/buck2/tree/main/integrations/rust-project.
-        workspace_discoverConfig: Option<DiscoverWorkspaceConfig> = None,
-    }
-}
-
-config_data! {
-    /// Local configurations can be defined per `SourceRoot`. This almost always corresponds to a `Crate`.
-    local: struct LocalDefaultConfigData <- LocalConfigInput ->  {
-        /// Insert #[must_use] when generating `as_` methods for enum variants.
-        assist_emitMustUse: bool = false,
-
-        /// Placeholder expression to use for missing expressions in assists.
-        assist_expressionFillDefault: ExprFillDefaultDef = ExprFillDefaultDef::Todo,
-
-        /// Prefer to use `Self` over the type name when inserting a type (e.g. in "fill match arms" assist).
-        assist_preferSelf: bool = false,
-
-        /// Enable borrow checking for term search code assists. If set to false, also there will be
-        /// more suggestions, but some of them may not borrow-check.
-        assist_termSearch_borrowcheck: bool = true,
-
-        /// Term search fuel in "units of work" for assists (Defaults to 1800).
-        assist_termSearch_fuel: usize = 1800,
-
-        /// Automatically add a semicolon when completing unit-returning functions.
-        ///
-        /// In `match` arms it completes a comma instead.
-        completion_addSemicolonToUnit: bool = true,
-
-        /// Show method calls and field accesses completions with `await` prefixed to them when
-        /// completing on a future.
-        completion_autoAwait_enable: bool = true,
-
-        /// Show method call completions with `iter()` or `into_iter()` prefixed to them when
-        /// completing on a type that has them.
-        completion_autoIter_enable: bool = true,
-
-        /// Show completions that automatically add imports when completed.
-        ///
-        /// Note that your client must specify the `additionalTextEdits` LSP client capability to
-        /// truly have this feature enabled.
-        completion_autoimport_enable: bool = true,
-
-        /// A list of full paths to items to exclude from auto-importing completions.
-        ///
-        /// Traits in this list won't have their methods suggested in completions unless the trait
-        /// is in scope.
-        ///
-        /// You can either specify a string path which defaults to type "always" or use the more
-        /// verbose form `{ "path": "path::to::item", type: "always" }`.
-        ///
-        /// For traits the type "methods" can be used to only exclude the methods but not the trait
-        /// itself.
-        ///
-        /// This setting also inherits `#rust-analyzer.completion.excludeTraits#`.
-        completion_autoimport_exclude: Vec<AutoImportExclusion> = vec![
-            AutoImportExclusion::Verbose { path: "core::borrow::Borrow".to_owned(), r#type: AutoImportExclusionType::Methods },
-            AutoImportExclusion::Verbose { path: "core::borrow::BorrowMut".to_owned(), r#type: AutoImportExclusionType::Methods },
-        ],
-
-        /// Show method calls and field access completions with `self` prefixed to them when
-        /// inside a method.
-        completion_autoself_enable: bool = true,
-
-        /// Add parenthesis and argument snippets when completing function.
-        completion_callable_snippets: CallableCompletionDef = CallableCompletionDef::FillArguments,
-
-        /// A list of full paths to traits whose methods to exclude from completion.
-        ///
-        /// Methods from these traits won't be completed, even if the trait is in scope. However,
-        /// they will still be suggested on expressions whose type is `dyn Trait`, `impl Trait` or
-        /// `T where T: Trait`.
-        ///
-        /// Note that the trait themselves can still be completed.
-        completion_excludeTraits: Vec<String> = Vec::new(),
-
-        /// Show full function / method signatures in completion docs.
-        completion_fullFunctionSignatures_enable: bool = false,
-
-        /// Omit deprecated items from completions. By default they are marked as deprecated but not
-        /// hidden.
-        completion_hideDeprecated: bool = false,
-
-        /// Maximum number of completions to return. If `None`, the limit is infinite.
-        completion_limit: Option<usize> = None,
-
-        /// Show postfix snippets like `dbg`, `if`, `not`, etc.
-        completion_postfix_enable: bool = true,
-
-        /// Show completions of private items and fields that are defined in the current workspace
-        /// even if they are not visible at the current position.
-        completion_privateEditable_enable: bool = false,
-
-        /// Enable term search based snippets like `Some(foo.bar().baz())`.
-        completion_termSearch_enable: bool = false,
-
-        /// Term search fuel in "units of work" for autocompletion (Defaults to 1000).
-        completion_termSearch_fuel: usize = 1000,
-
-        /// List of rust-analyzer diagnostics to disable.
-        diagnostics_disabled: FxHashSet<String> = FxHashSet::default(),
-
-        /// Show native rust-analyzer diagnostics.
-        diagnostics_enable: bool = true,
-
-        /// Show experimental rust-analyzer diagnostics that might have more false positives than
-        /// usual.
-        diagnostics_experimental_enable: bool = false,
-
-        /// Map of prefixes to be substituted when parsing diagnostic file paths. This should be the
-        /// reverse mapping of what is passed to `rustc` as `--remap-path-prefix`.
-        diagnostics_remapPrefix: FxHashMap<String, String> = FxHashMap::default(),
-
-        /// Run additional style lints.
-        diagnostics_styleLints_enable: bool = false,
-
-        /// List of warnings that should be displayed with hint severity.
-        ///
-        /// The warnings will be indicated by faded text or three dots in code and will not show up
-        /// in the `Problems Panel`.
-        diagnostics_warningsAsHint: Vec<String> = vec![],
-
-        /// List of warnings that should be displayed with info severity.
-        ///
-        /// The warnings will be indicated by a blue squiggly underline in code and a blue icon in
-        /// the `Problems Panel`.
-        diagnostics_warningsAsInfo: Vec<String> = vec![],
-
-        /// Enforce the import granularity setting for all files. If set to false rust-analyzer will
-        /// try to keep import styles consistent per file.
-        imports_granularity_enforce: bool = false,
-
-        /// How imports should be grouped into use statements.
-        imports_granularity_group: ImportGranularityDef = ImportGranularityDef::Crate,
-
-        /// Group inserted imports by the [following
-        /// order](https://rust-analyzer.github.io/book/features.html#auto-import). Groups are
-        /// separated by newlines.
-        imports_group_enable: bool = true,
-
-        /// Allow import insertion to merge new imports into single path glob imports like `use
-        /// std::fmt::*;`.
-        imports_merge_glob: bool = true,
-
-        /// Prefer to unconditionally use imports of the core and alloc crate, over the std crate.
-        imports_preferNoStd | imports_prefer_no_std: bool = false,
-
-        /// Prefer import paths containing a `prelude` module.
-        imports_preferPrelude: bool = false,
-
-        /// The path structure for newly inserted paths to use.
-        imports_prefix: ImportPrefixDef = ImportPrefixDef::ByCrate,
-
-        /// Prefix external (including std, core) crate imports with `::`.
-        ///
-        /// E.g. `use ::std::io::Read;`.
-        imports_prefixExternPrelude: bool = false,
-    }
-}
-
-config_data! {
-    workspace: struct WorkspaceDefaultConfigData <- WorkspaceConfigInput -> {
-        /// Pass `--all-targets` to cargo invocation.
-        cargo_allTargets: bool           = true,
-        /// Automatically refresh project info via `cargo metadata` on
-        /// `Cargo.toml` or `.cargo/config.toml` changes.
-        cargo_autoreload: bool           = true,
-        /// Run build scripts (`build.rs`) for more precise code analysis.
-        cargo_buildScripts_enable: bool  = true,
-        /// Specifies the invocation strategy to use when running the build scripts command.
-        /// If `per_workspace` is set, the command will be executed for each Rust workspace with the
-        /// workspace as the working directory.
-        /// If `once` is set, the command will be executed once with the opened project as the
-        /// working directory.
-        /// This config only has an effect when `#rust-analyzer.cargo.buildScripts.overrideCommand#`
-        /// is set.
-        cargo_buildScripts_invocationStrategy: InvocationStrategy = InvocationStrategy::PerWorkspace,
-        /// Override the command rust-analyzer uses to run build scripts and
-        /// build procedural macros. The command is required to output json
-        /// and should therefore include `--message-format=json` or a similar
-        /// option.
-        ///
-        /// If there are multiple linked projects/workspaces, this command is invoked for
-        /// each of them, with the working directory being the workspace root
-        /// (i.e., the folder containing the `Cargo.toml`). This can be overwritten
-        /// by changing `#rust-analyzer.cargo.buildScripts.invocationStrategy#`.
-        ///
-        /// By default, a cargo invocation will be constructed for the configured
-        /// targets and features, with the following base command line:
-        ///
-        /// ```bash
-        /// cargo check --quiet --workspace --message-format=json --all-targets --keep-going
-        /// ```
-        ///
-        /// Note: The option must be specified as an array of command line arguments, with
-        /// the first argument being the name of the command to run.
-        cargo_buildScripts_overrideCommand: Option<Vec<String>> = None,
-        /// Rerun proc-macros building/build-scripts running when proc-macro
-        /// or build-script sources change and are saved.
-        cargo_buildScripts_rebuildOnSave: bool = true,
-        /// Use `RUSTC_WRAPPER=rust-analyzer` when running build scripts to
-        /// avoid checking unnecessary things.
-        cargo_buildScripts_useRustcWrapper: bool = true,
-        /// List of cfg options to enable with the given values.
-        ///
-        /// To enable a name without a value, use `"key"`.
-        /// To enable a name with a value, use `"key=value"`.
-        /// To disable, prefix the entry with a `!`.
-        cargo_cfgs: Vec<String> = {
-            vec!["debug_assertions".into(), "miri".into()]
-        },
-        /// List of features to activate.
-        ///
-        /// Set this to `"all"` to pass `--all-features` to cargo.
-        cargo_features: CargoFeaturesDef      = CargoFeaturesDef::Selected(vec![]),
-        /// Whether to pass `--no-default-features` to cargo.
-        cargo_noDefaultFeatures: bool    = false,
-        /// Whether to skip fetching dependencies. If set to "true", the analysis is performed
-        /// entirely offline, and Cargo metadata for dependencies is not fetched.
-        cargo_noDeps: bool = false,
-        /// Relative path to the sysroot, or "discover" to try to automatically find it via
-        /// "rustc --print sysroot".
-        ///
-        /// Unsetting this disables sysroot loading.
-        ///
-        /// This option does not take effect until rust-analyzer is restarted.
-        cargo_sysroot: Option<String>    = Some("discover".to_owned()),
-        /// Relative path to the sysroot library sources. If left unset, this will default to
-        /// `{cargo.sysroot}/lib/rustlib/src/rust/library`.
-        ///
-        /// This option does not take effect until rust-analyzer is restarted.
-        cargo_sysrootSrc: Option<String>    = None,
-        /// Compilation target override (target tuple).
-        // FIXME(@poliorcetics): move to multiple targets here too, but this will need more work
-        // than `checkOnSave_target`
-        cargo_target: Option<String>     = None,
-        /// Optional path to a rust-analyzer specific target directory.
-        /// This prevents rust-analyzer's `cargo check` and initial build-script and proc-macro
-        /// building from locking the `Cargo.lock` at the expense of duplicating build artifacts.
-        ///
-        /// Set to `true` to use a subdirectory of the existing target directory or
-        /// set to a path relative to the workspace to use that path.
-        cargo_targetDir | rust_analyzerTargetDir: Option<TargetDirectory> = None,
-
-        /// Set `cfg(test)` for local crates. Defaults to true.
-        cfg_setTest: bool = true,
-
-        /// Run the check command for diagnostics on save.
-        checkOnSave | checkOnSave_enable: bool                         = true,
-
-
-        /// Check all targets and tests (`--all-targets`). Defaults to
-        /// `#rust-analyzer.cargo.allTargets#`.
-        check_allTargets | checkOnSave_allTargets: Option<bool>          = None,
-        /// Cargo command to use for `cargo check`.
-        check_command | checkOnSave_command: String                      = "check".to_owned(),
-        /// List of features to activate. Defaults to
-        /// `#rust-analyzer.cargo.features#`.
-        ///
-        /// Set to `"all"` to pass `--all-features` to Cargo.
-        check_features | checkOnSave_features: Option<CargoFeaturesDef>  = None,
-        /// List of `cargo check` (or other command specified in `check.command`) diagnostics to ignore.
-        ///
-        /// For example for `cargo check`: `dead_code`, `unused_imports`, `unused_variables`,...
-        check_ignore: FxHashSet<String> = FxHashSet::default(),
-        /// Specifies the invocation strategy to use when running the check command.
-        /// If `per_workspace` is set, the command will be executed for each workspace.
-        /// If `once` is set, the command will be executed once.
-        /// This config only has an effect when `#rust-analyzer.check.overrideCommand#`
-        /// is set.
-        check_invocationStrategy | checkOnSave_invocationStrategy: InvocationStrategy = InvocationStrategy::PerWorkspace,
-        /// Whether to pass `--no-default-features` to Cargo. Defaults to
-        /// `#rust-analyzer.cargo.noDefaultFeatures#`.
-        check_noDefaultFeatures | checkOnSave_noDefaultFeatures: Option<bool>         = None,
-        /// Override the command rust-analyzer uses instead of `cargo check` for
-        /// diagnostics on save. The command is required to output json and
-        /// should therefore include `--message-format=json` or a similar option
-        /// (if your client supports the `colorDiagnosticOutput` experimental
-        /// capability, you can use `--message-format=json-diagnostic-rendered-ansi`).
-        ///
-        /// If you're changing this because you're using some tool wrapping
-        /// Cargo, you might also want to change
-        /// `#rust-analyzer.cargo.buildScripts.overrideCommand#`.
-        ///
-        /// If there are multiple linked projects/workspaces, this command is invoked for
-        /// each of them, with the working directory being the workspace root
-        /// (i.e., the folder containing the `Cargo.toml`). This can be overwritten
-        /// by changing `#rust-analyzer.check.invocationStrategy#`.
-        ///
-        /// If `$saved_file` is part of the command, rust-analyzer will pass
-        /// the absolute path of the saved file to the provided command. This is
-        /// intended to be used with non-Cargo build systems.
-        /// Note that `$saved_file` is experimental and may be removed in the future.
-        ///
-        /// An example command would be:
-        ///
-        /// ```bash
-        /// cargo check --workspace --message-format=json --all-targets
-        /// ```
-        ///
-        /// Note: The option must be specified as an array of command line arguments, with
-        /// the first argument being the name of the command to run.
-        check_overrideCommand | checkOnSave_overrideCommand: Option<Vec<String>>             = None,
-        /// Check for specific targets. Defaults to `#rust-analyzer.cargo.target#` if empty.
-        ///
-        /// Can be a single target, e.g. `"x86_64-unknown-linux-gnu"` or a list of targets, e.g.
-        /// `["aarch64-apple-darwin", "x86_64-apple-darwin"]`.
-        ///
-        /// Aliased as `"checkOnSave.targets"`.
-        check_targets | checkOnSave_targets | checkOnSave_target: Option<CheckOnSaveTargets> = None,
-        /// Whether `--workspace` should be passed to `cargo check`.
-        /// If false, `-p <package>` will be passed instead if applicable. In case it is not, no
-        /// check will be performed.
-        check_workspace: bool = true,
-
-        /// Exclude all locals from document symbol search.
-        document_symbol_search_excludeLocals: bool = true,
-
-        /// These proc-macros will be ignored when trying to expand them.
-        ///
-        /// This config takes a map of crate names with the exported proc-macro names to ignore as values.
-        procMacro_ignored: FxHashMap<Box<str>, Box<[Box<str>]>>          = FxHashMap::default(),
-
-        /// Command to be executed instead of 'cargo' for runnables.
-        runnables_command: Option<String> = None,
-        /// Additional arguments to be passed through Cargo to launched tests, benchmarks, or
-        /// doc-tests.
-        ///
-        /// Unless the launched target uses a
-        /// [custom test harness](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#the-harness-field),
-        /// they will end up being interpreted as options to
-        /// [`rustc`’s built-in test harness (“libtest”)](https://doc.rust-lang.org/rustc/tests/index.html#cli-arguments).
-        runnables_extraTestBinaryArgs: Vec<String> = vec!["--nocapture".to_owned()],
-
-        /// Path to the Cargo.toml of the rust compiler workspace, for usage in rustc_private
-        /// projects, or "discover" to try to automatically find it if the `rustc-dev` component
-        /// is installed.
-        ///
-        /// Any project which uses rust-analyzer with the rustcPrivate
-        /// crates must set `[package.metadata.rust-analyzer] rustc_private=true` to use it.
-        ///
-        /// This option does not take effect until rust-analyzer is restarted.
-        rustc_source: Option<String> = None,
-
-        /// Advanced option, fully override the command rust-analyzer uses for
-        /// formatting. This should be the equivalent of `rustfmt` here, and
-        /// not that of `cargo fmt`. The file contents will be passed on the
-        /// standard input and the formatted result will be read from the
-        /// standard output.
-        ///
-        /// Note: The option must be specified as an array of command line arguments, with
-        /// the first argument being the name of the command to run.
-        rustfmt_overrideCommand: Option<Vec<String>> = None,
-        /// Enables the use of rustfmt's unstable range formatting command for the
-        /// `textDocument/rangeFormatting` request. The rustfmt option is unstable and only
-        /// available on a nightly build.
-        rustfmt_rangeFormatting_enable: bool = false,
-
-        /// Additional paths to include in the VFS. Generally for code that is
-        /// generated or otherwise managed by a build system outside of Cargo,
-        /// though Cargo might be the eventual consumer.
-        vfs_extraIncludes: Vec<String> = vec![],
-
-        /// Exclude all imports from workspace symbol search.
-        ///
-        /// In addition to regular imports (which are always excluded),
-        /// this option removes public imports (better known as re-exports)
-        /// and removes imports that rename the imported symbol.
-        workspace_symbol_search_excludeImports: bool = false,
-        /// Workspace symbol search kind.
-        workspace_symbol_search_kind: WorkspaceSymbolSearchKindDef = WorkspaceSymbolSearchKindDef::OnlyTypes,
-        /// Limits the number of items returned from a workspace symbol search (Defaults to 128).
-        /// Some clients like vs-code issue new searches on result filtering and don't require all results to be returned in the initial search.
-        /// Other clients requires all results upfront and might require a higher limit.
-        workspace_symbol_search_limit: usize = 128,
-        /// Workspace symbol search scope.
-        workspace_symbol_search_scope: WorkspaceSymbolSearchScopeDef = WorkspaceSymbolSearchScopeDef::Workspace,
-    }
-}
-
-config_data! {
-    /// Configs that only make sense when they are set by a client. As such they can only be defined
-    /// by setting them using client's settings (e.g `settings.json` on VS Code).
-    client: struct ClientDefaultConfigData <- ClientConfigInput -> {
-
-        /// Controls file watching implementation.
-        files_watcher: FilesWatcherDef = FilesWatcherDef::Client,
-
-
-    }
-}
-
 #[derive(Clone, Debug)]
 struct ClientInfo {
     name: String,
@@ -952,8 +73,6 @@ pub struct Config {
     root_path: AbsPathBuf,
     snippets: Vec<Snippet>,
     client_info: Option<ClientInfo>,
-
-    default_config: &'static DefaultConfigData,
 }
 
 impl fmt::Debug for Config {
@@ -1208,8 +327,6 @@ impl Config {
         workspace_roots: Vec<AbsPathBuf>,
         client_info: Option<lsp_types::ClientInfo>,
     ) -> Self {
-        static DEFAULT_CONFIG_DATA: OnceLock<&'static DefaultConfigData> = OnceLock::new();
-
         let mut this = Config {
             caps: ClientCapabilities::new(caps),
             discovered_projects_from_filesystem: Vec::new(),
@@ -1221,7 +338,6 @@ impl Config {
                 name: it.name,
                 version: it.version.as_deref().map(Version::parse).and_then(Result::ok),
             }),
-            default_config: DEFAULT_CONFIG_DATA.get_or_init(|| Box::leak(Box::default())),
         };
         this.rediscover_workspaces();
         this
@@ -1261,114 +377,101 @@ impl Config {
             snippet_cap: self.snippet_cap(),
             allowed: None,
             insert_use: self.insert_use_config(),
-            prefer_no_std: self.imports_preferNoStd().to_owned(),
-            assist_emit_must_use: self.assist_emitMustUse().to_owned(),
-            prefer_prelude: self.imports_preferPrelude().to_owned(),
-            prefer_absolute: self.imports_prefixExternPrelude().to_owned(),
-            term_search_fuel: self.assist_termSearch_fuel().to_owned() as u64,
-            term_search_borrowck: self.assist_termSearch_borrowcheck().to_owned(),
+            prefer_no_std: false,
+            assist_emit_must_use: false,
+            prefer_prelude: false,
+            prefer_absolute: false,
+            term_search_fuel: 1800,
+            term_search_borrowck: true,
             code_action_grouping: self.code_action_group(),
-            expr_fill_default: match self.assist_expressionFillDefault() {
-                ExprFillDefaultDef::Todo => ExprFillDefaultMode::Todo,
-                ExprFillDefaultDef::Default => ExprFillDefaultMode::Default,
-                ExprFillDefaultDef::Underscore => ExprFillDefaultMode::Underscore,
-            },
-            prefer_self_ty: *self.assist_preferSelf(),
+            expr_fill_default: ExprFillDefaultMode::Todo,
+            prefer_self_ty: false,
         }
     }
 
     pub fn rename(&self) -> RenameConfig {
-        RenameConfig {
-            prefer_no_std: self.imports_preferNoStd().to_owned(),
-            prefer_prelude: self.imports_preferPrelude().to_owned(),
-            prefer_absolute: self.imports_prefixExternPrelude().to_owned(),
-        }
+        RenameConfig { prefer_no_std: false, prefer_prelude: false, prefer_absolute: false }
     }
 
     pub fn call_hierarchy<'a>(&self, minicore: MiniCore<'a>) -> CallHierarchyConfig<'a> {
-        CallHierarchyConfig { exclude_tests: self.references_excludeTests().to_owned(), minicore }
+        CallHierarchyConfig { exclude_tests: false, minicore }
     }
 
     pub fn completion<'a>(&'a self, minicore: MiniCore<'a>) -> CompletionConfig<'a> {
         let client_capability_fields = self.completion_resolve_support_properties();
         CompletionConfig {
-            enable_postfix_completions: self.completion_postfix_enable().to_owned(),
-            enable_imports_on_the_fly: self.completion_autoimport_enable().to_owned()
-                && self.caps.has_completion_item_resolve_additionalTextEdits(),
-            enable_self_on_the_fly: self.completion_autoself_enable().to_owned(),
-            enable_auto_iter: *self.completion_autoIter_enable(),
-            enable_auto_await: *self.completion_autoAwait_enable(),
-            enable_private_editable: self.completion_privateEditable_enable().to_owned(),
-            full_function_signatures: self.completion_fullFunctionSignatures_enable().to_owned(),
-            callable: match self.completion_callable_snippets() {
-                CallableCompletionDef::FillArguments => Some(CallableSnippets::FillArguments),
-                CallableCompletionDef::AddParentheses => Some(CallableSnippets::AddParentheses),
-                CallableCompletionDef::None => None,
-            },
-            add_semicolon_to_unit: *self.completion_addSemicolonToUnit(),
+            enable_postfix_completions: true,
+            enable_imports_on_the_fly: self.caps.has_completion_item_resolve_additionalTextEdits(),
+            enable_self_on_the_fly: true,
+            enable_auto_iter: true,
+            enable_auto_await: true,
+            enable_private_editable: false,
+            full_function_signatures: false,
+            callable: Some(CallableSnippets::FillArguments),
+            add_semicolon_to_unit: true,
             snippet_cap: SnippetCap::new(self.completion_snippet()),
             insert_use: self.insert_use_config(),
-            prefer_no_std: self.imports_preferNoStd().to_owned(),
-            prefer_prelude: self.imports_preferPrelude().to_owned(),
-            prefer_absolute: self.imports_prefixExternPrelude().to_owned(),
+            prefer_no_std: false,
+            prefer_prelude: false,
+            prefer_absolute: false,
             snippets: self.snippets.clone().to_vec(),
-            limit: self.completion_limit().to_owned(),
-            enable_term_search: self.completion_termSearch_enable().to_owned(),
-            term_search_fuel: self.completion_termSearch_fuel().to_owned() as u64,
+            limit: None,
+            enable_term_search: false,
+            term_search_fuel: 1000,
             fields_to_resolve: if self.client_is_neovim() {
                 CompletionFieldsToResolve::empty()
             } else {
                 CompletionFieldsToResolve::from_client_capabilities(&client_capability_fields)
             },
-            exclude_flyimport: self
-                .completion_autoimport_exclude()
-                .iter()
-                .map(|it| match it {
-                    AutoImportExclusion::Path(path) => {
-                        (path.clone(), ide_completion::AutoImportExclusionType::Always)
-                    }
-                    AutoImportExclusion::Verbose { path, r#type } => (
-                        path.clone(),
-                        match r#type {
-                            AutoImportExclusionType::Always => {
-                                ide_completion::AutoImportExclusionType::Always
-                            }
-                            AutoImportExclusionType::Methods => {
-                                ide_completion::AutoImportExclusionType::Methods
-                            }
-                        },
-                    ),
-                })
-                .collect(),
-            exclude_traits: self.completion_excludeTraits(),
+            exclude_flyimport: vec![
+                AutoImportExclusion::Verbose {
+                    path: "core::borrow::Borrow".to_owned(),
+                    r#type: AutoImportExclusionType::Methods,
+                },
+                AutoImportExclusion::Verbose {
+                    path: "core::borrow::BorrowMut".to_owned(),
+                    r#type: AutoImportExclusionType::Methods,
+                },
+            ]
+            .iter()
+            .map(|it| match it {
+                AutoImportExclusion::Path(path) => {
+                    (path.clone(), ide_completion::AutoImportExclusionType::Always)
+                }
+                AutoImportExclusion::Verbose { path, r#type } => (
+                    path.clone(),
+                    match r#type {
+                        AutoImportExclusionType::Always => {
+                            ide_completion::AutoImportExclusionType::Always
+                        }
+                        AutoImportExclusionType::Methods => {
+                            ide_completion::AutoImportExclusionType::Methods
+                        }
+                    },
+                ),
+            })
+            .collect(),
+            exclude_traits: &[],
             minicore,
         }
     }
 
-    pub fn completion_hide_deprecated(&self) -> bool {
-        *self.completion_hideDeprecated()
-    }
-
     pub fn diagnostics(&self) -> DiagnosticsConfig {
         DiagnosticsConfig {
-            enabled: *self.diagnostics_enable(),
-            proc_attr_macros_enabled: self.expand_proc_attr_macros(),
-            proc_macros_enabled: *self.procMacro_enable(),
-            disable_experimental: !self.diagnostics_experimental_enable(),
-            disabled: self.diagnostics_disabled().clone(),
-            expr_fill_default: match self.assist_expressionFillDefault() {
-                ExprFillDefaultDef::Todo => ExprFillDefaultMode::Todo,
-                ExprFillDefaultDef::Default => ExprFillDefaultMode::Default,
-                ExprFillDefaultDef::Underscore => ExprFillDefaultMode::Underscore,
-            },
+            enabled: true,
+            proc_attr_macros_enabled: true,
+            proc_macros_enabled: true,
+            disable_experimental: true,
+            disabled: FxHashSet::default(),
+            expr_fill_default: ExprFillDefaultMode::Todo,
             snippet_cap: self.snippet_cap(),
             insert_use: self.insert_use_config(),
-            prefer_no_std: self.imports_preferNoStd().to_owned(),
-            prefer_prelude: self.imports_preferPrelude().to_owned(),
-            prefer_absolute: self.imports_prefixExternPrelude().to_owned(),
-            style_lints: self.diagnostics_styleLints_enable().to_owned(),
-            term_search_fuel: self.assist_termSearch_fuel().to_owned() as u64,
-            term_search_borrowck: self.assist_termSearch_borrowcheck().to_owned(),
+            prefer_no_std: false,
+            prefer_prelude: false,
+            prefer_absolute: false,
+            style_lints: false,
+            term_search_fuel: 1800,
+            term_search_borrowck: true,
         }
     }
 
@@ -1377,51 +480,40 @@ impl Config {
         DiagnosticsConfig { enabled: true, disable_experimental: false, ..self.diagnostics() }
     }
 
-    pub fn expand_proc_attr_macros(&self) -> bool {
-        self.procMacro_enable().to_owned() && self.procMacro_attributes_enable().to_owned()
-    }
-
     pub fn highlight_related(&self, _source_root: Option<SourceRootId>) -> HighlightRelatedConfig {
         HighlightRelatedConfig {
-            references: self.highlightRelated_references_enable().to_owned(),
-            break_points: self.highlightRelated_breakPoints_enable().to_owned(),
-            exit_points: self.highlightRelated_exitPoints_enable().to_owned(),
-            yield_points: self.highlightRelated_yieldPoints_enable().to_owned(),
-            closure_captures: self.highlightRelated_closureCaptures_enable().to_owned(),
-            branch_exit_points: self.highlightRelated_branchExitPoints_enable().to_owned(),
+            references: true,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+            closure_captures: true,
+            branch_exit_points: true,
         }
     }
 
     pub fn hover_actions(&self) -> HoverActionsConfig {
-        let enable = self.caps.hover_actions() && self.hover_actions_enable().to_owned();
+        let enable = self.caps.hover_actions();
         HoverActionsConfig {
-            implementations: enable && self.hover_actions_implementations_enable().to_owned(),
-            references: enable && self.hover_actions_references_enable().to_owned(),
-            run: enable && self.hover_actions_run_enable().to_owned(),
-            debug: enable && self.hover_actions_debug_enable().to_owned(),
-            update_test: enable
-                && self.hover_actions_run_enable().to_owned()
-                && self.hover_actions_updateTest_enable().to_owned(),
-            goto_type_def: enable && self.hover_actions_gotoTypeDef_enable().to_owned(),
+            implementations: enable && true,
+            references: false,
+            run: enable && true,
+            debug: enable,
+            update_test: enable,
+            goto_type_def: enable,
         }
     }
 
     pub fn hover<'a>(&self, minicore: MiniCore<'a>) -> HoverConfig<'a> {
-        let mem_kind = |kind| match kind {
-            MemoryLayoutHoverRenderKindDef::Both => MemoryLayoutHoverRenderKind::Both,
-            MemoryLayoutHoverRenderKindDef::Decimal => MemoryLayoutHoverRenderKind::Decimal,
-            MemoryLayoutHoverRenderKindDef::Hexadecimal => MemoryLayoutHoverRenderKind::Hexadecimal,
-        };
         HoverConfig {
-            links_in_hover: self.hover_links_enable().to_owned(),
-            memory_layout: self.hover_memoryLayout_enable().then_some(MemoryLayoutHoverConfig {
-                size: self.hover_memoryLayout_size().map(mem_kind),
-                offset: self.hover_memoryLayout_offset().map(mem_kind),
-                alignment: self.hover_memoryLayout_alignment().map(mem_kind),
-                padding: self.hover_memoryLayout_padding().map(mem_kind),
-                niches: self.hover_memoryLayout_niches().unwrap_or_default(),
+            links_in_hover: true,
+            memory_layout: Some(MemoryLayoutHoverConfig {
+                size: Some(MemoryLayoutHoverRenderKind::Both),
+                offset: Some(MemoryLayoutHoverRenderKind::Hexadecimal),
+                alignment: Some(MemoryLayoutHoverRenderKind::Hexadecimal),
+                padding: None,
+                niches: false,
             }),
-            documentation: self.hover_documentation_enable().to_owned(),
+            documentation: true,
             format: {
                 if self.caps.hover_markdown_support() {
                     HoverDocFormat::Markdown
@@ -1429,16 +521,12 @@ impl Config {
                     HoverDocFormat::PlainText
                 }
             },
-            keywords: self.hover_documentation_keywords_enable().to_owned(),
-            max_trait_assoc_items_count: self.hover_show_traitAssocItems().to_owned(),
-            max_fields_count: self.hover_show_fields().to_owned(),
-            max_enum_variants_count: self.hover_show_enumVariants().to_owned(),
-            max_subst_ty_len: match self.hover_maxSubstitutionLength() {
-                Some(MaxSubstitutionLength::Hide) => ide::SubstTyLen::Hide,
-                Some(MaxSubstitutionLength::Limit(limit)) => ide::SubstTyLen::LimitTo(*limit),
-                None => ide::SubstTyLen::Unlimited,
-            },
-            show_drop_glue: *self.hover_dropGlue_enable(),
+            keywords: true,
+            max_trait_assoc_items_count: None,
+            max_fields_count: Some(5),
+            max_enum_variants_count: Some(5),
+            max_subst_ty_len: ide::SubstTyLen::LimitTo(20),
+            show_drop_glue: true,
             minicore,
         }
     }
@@ -1451,163 +539,77 @@ impl Config {
         let client_capability_fields = self.inlay_hint_resolve_support_properties();
 
         InlayHintsConfig {
-            render_colons: self.inlayHints_renderColons().to_owned(),
-            type_hints: self.inlayHints_typeHints_enable().to_owned(),
-            sized_bound: self.inlayHints_implicitSizedBoundHints_enable().to_owned(),
-            parameter_hints: self.inlayHints_parameterHints_enable().to_owned(),
+            render_colons: true,
+            type_hints: true,
+            sized_bound: false,
+            parameter_hints: true,
             generic_parameter_hints: GenericParameterHints {
-                type_hints: self.inlayHints_genericParameterHints_type_enable().to_owned(),
-                lifetime_hints: self.inlayHints_genericParameterHints_lifetime_enable().to_owned(),
-                const_hints: self.inlayHints_genericParameterHints_const_enable().to_owned(),
+                type_hints: false,
+                lifetime_hints: false,
+                const_hints: true,
             },
-            chaining_hints: self.inlayHints_chainingHints_enable().to_owned(),
-            discriminant_hints: match self.inlayHints_discriminantHints_enable() {
-                DiscriminantHintsDef::Always => ide::DiscriminantHints::Always,
-                DiscriminantHintsDef::Never => ide::DiscriminantHints::Never,
-                DiscriminantHintsDef::Fieldless => ide::DiscriminantHints::Fieldless,
-            },
-            closure_return_type_hints: match self.inlayHints_closureReturnTypeHints_enable() {
-                ClosureReturnTypeHintsDef::Always => ide::ClosureReturnTypeHints::Always,
-                ClosureReturnTypeHintsDef::Never => ide::ClosureReturnTypeHints::Never,
-                ClosureReturnTypeHintsDef::WithBlock => ide::ClosureReturnTypeHints::WithBlock,
-            },
-            lifetime_elision_hints: match self.inlayHints_lifetimeElisionHints_enable() {
-                LifetimeElisionDef::Always => ide::LifetimeElisionHints::Always,
-                LifetimeElisionDef::Never => ide::LifetimeElisionHints::Never,
-                LifetimeElisionDef::SkipTrivial => ide::LifetimeElisionHints::SkipTrivial,
-            },
-            hide_named_constructor_hints: self
-                .inlayHints_typeHints_hideNamedConstructor()
-                .to_owned(),
-            hide_closure_initialization_hints: self
-                .inlayHints_typeHints_hideClosureInitialization()
-                .to_owned(),
-            hide_closure_parameter_hints: self
-                .inlayHints_typeHints_hideClosureParameter()
-                .to_owned(),
-            closure_style: match self.inlayHints_closureStyle() {
-                ClosureStyle::ImplFn => hir::ClosureStyle::ImplFn,
-                ClosureStyle::RustAnalyzer => hir::ClosureStyle::RANotation,
-                ClosureStyle::WithId => hir::ClosureStyle::ClosureWithId,
-                ClosureStyle::Hide => hir::ClosureStyle::Hide,
-            },
-            closure_capture_hints: self.inlayHints_closureCaptureHints_enable().to_owned(),
-            adjustment_hints: match self.inlayHints_expressionAdjustmentHints_enable() {
-                AdjustmentHintsDef::Always => ide::AdjustmentHints::Always,
-                AdjustmentHintsDef::Never => match self.inlayHints_reborrowHints_enable() {
-                    ReborrowHintsDef::Always | ReborrowHintsDef::Mutable => {
-                        ide::AdjustmentHints::BorrowsOnly
-                    }
-                    ReborrowHintsDef::Never => ide::AdjustmentHints::Never,
-                },
-                AdjustmentHintsDef::Borrows => ide::AdjustmentHints::BorrowsOnly,
-            },
-            adjustment_hints_disable_reborrows: *self
-                .inlayHints_expressionAdjustmentHints_disableReborrows(),
-            adjustment_hints_mode: match self.inlayHints_expressionAdjustmentHints_mode() {
-                AdjustmentHintsModeDef::Prefix => ide::AdjustmentHintsMode::Prefix,
-                AdjustmentHintsModeDef::Postfix => ide::AdjustmentHintsMode::Postfix,
-                AdjustmentHintsModeDef::PreferPrefix => ide::AdjustmentHintsMode::PreferPrefix,
-                AdjustmentHintsModeDef::PreferPostfix => ide::AdjustmentHintsMode::PreferPostfix,
-            },
-            adjustment_hints_hide_outside_unsafe: self
-                .inlayHints_expressionAdjustmentHints_hideOutsideUnsafe()
-                .to_owned(),
-            binding_mode_hints: self.inlayHints_bindingModeHints_enable().to_owned(),
-            param_names_for_lifetime_elision_hints: self
-                .inlayHints_lifetimeElisionHints_useParameterNames()
-                .to_owned(),
-            max_length: self.inlayHints_maxLength().to_owned(),
-            closing_brace_hints_min_lines: if self.inlayHints_closingBraceHints_enable().to_owned()
-            {
-                Some(self.inlayHints_closingBraceHints_minLines().to_owned())
-            } else {
-                None
-            },
+            chaining_hints: true,
+            discriminant_hints: ide::DiscriminantHints::Never,
+            closure_return_type_hints: ide::ClosureReturnTypeHints::Never,
+            lifetime_elision_hints: ide::LifetimeElisionHints::Never,
+            hide_named_constructor_hints: false,
+            hide_closure_initialization_hints: false,
+            hide_closure_parameter_hints: false,
+            closure_style: hir::ClosureStyle::ImplFn,
+            closure_capture_hints: false,
+            adjustment_hints: ide::AdjustmentHints::Never,
+            adjustment_hints_disable_reborrows: true,
+            adjustment_hints_mode: ide::AdjustmentHintsMode::Prefix,
+            adjustment_hints_hide_outside_unsafe: false,
+            binding_mode_hints: false,
+            param_names_for_lifetime_elision_hints: false,
+            max_length: Some(25),
+            closing_brace_hints_min_lines: Some(25),
             fields_to_resolve: InlayFieldsToResolve::from_client_capabilities(
                 &client_capability_fields,
             ),
-            implicit_drop_hints: self.inlayHints_implicitDrops_enable().to_owned(),
-            range_exclusive_hints: self.inlayHints_rangeExclusiveHints_enable().to_owned(),
+            implicit_drop_hints: false,
+            range_exclusive_hints: false,
             minicore,
         }
     }
 
     fn insert_use_config(&self) -> InsertUseConfig {
         InsertUseConfig {
-            granularity: match self.imports_granularity_group() {
-                ImportGranularityDef::Item | ImportGranularityDef::Preserve => {
-                    ImportGranularity::Item
-                }
-                ImportGranularityDef::Crate => ImportGranularity::Crate,
-                ImportGranularityDef::Module => ImportGranularity::Module,
-                ImportGranularityDef::One => ImportGranularity::One,
-            },
-            enforce_granularity: self.imports_granularity_enforce().to_owned(),
-            prefix_kind: match self.imports_prefix() {
-                ImportPrefixDef::Plain => PrefixKind::Plain,
-                ImportPrefixDef::ByCrate => PrefixKind::ByCrate,
-                ImportPrefixDef::BySelf => PrefixKind::BySelf,
-            },
-            group: self.imports_group_enable().to_owned(),
-            skip_glob_imports: !self.imports_merge_glob(),
+            granularity: ImportGranularity::Crate,
+            enforce_granularity: false,
+            prefix_kind: PrefixKind::ByCrate,
+            group: true,
+            skip_glob_imports: false,
         }
     }
 
     pub fn join_lines(&self) -> JoinLinesConfig {
         JoinLinesConfig {
-            join_else_if: self.joinLines_joinElseIf().to_owned(),
-            remove_trailing_comma: self.joinLines_removeTrailingComma().to_owned(),
-            unwrap_trivial_blocks: self.joinLines_unwrapTrivialBlock().to_owned(),
-            join_assignments: self.joinLines_joinAssignments().to_owned(),
+            join_else_if: true,
+            remove_trailing_comma: true,
+            unwrap_trivial_blocks: true,
+            join_assignments: true,
         }
-    }
-
-    pub fn highlighting_non_standard_tokens(&self) -> bool {
-        self.semanticHighlighting_nonStandardTokens().to_owned()
     }
 
     pub fn highlighting_config<'a>(&self, minicore: MiniCore<'a>) -> HighlightConfig<'a> {
         HighlightConfig {
-            strings: self.semanticHighlighting_strings_enable().to_owned(),
-            comments: self.semanticHighlighting_comments_enable().to_owned(),
-            punctuation: self.semanticHighlighting_punctuation_enable().to_owned(),
-            specialize_punctuation: self
-                .semanticHighlighting_punctuation_specialization_enable()
-                .to_owned(),
-            macro_bang: self.semanticHighlighting_punctuation_separate_macro_bang().to_owned(),
-            operator: self.semanticHighlighting_operator_enable().to_owned(),
-            specialize_operator: self
-                .semanticHighlighting_operator_specialization_enable()
-                .to_owned(),
-            inject_doc_comment: self.semanticHighlighting_doc_comment_inject_enable().to_owned(),
+            strings: true,
+            comments: true,
+            punctuation: false,
+            specialize_punctuation: false,
+            macro_bang: false,
+            operator: true,
+            specialize_operator: false,
+            inject_doc_comment: true,
             syntactic_name_ref_highlighting: false,
             minicore,
         }
     }
 
-    pub fn has_linked_projects(&self) -> bool {
-        !self.linkedProjects().is_empty()
-    }
-
-    pub fn linked_manifests(&self) -> impl Iterator<Item = &Utf8Path> + '_ {
-        self.linkedProjects().iter().filter_map(|it| match it {
-            ManifestOrProjectJson::Manifest(p) => Some(&**p),
-            // despite having a buildfile, using this variant as a manifest
-            // will fail.
-            ManifestOrProjectJson::DiscoveredProjectJson { .. } => None,
-            ManifestOrProjectJson::ProjectJson { .. } => None,
-        })
-    }
-
-    pub fn has_linked_project_jsons(&self) -> bool {
-        self.linkedProjects()
-            .iter()
-            .any(|it| matches!(it, ManifestOrProjectJson::ProjectJson { .. }))
-    }
-
     pub fn discover_workspace_config(&self) -> Option<&DiscoverWorkspaceConfig> {
-        self.workspace_discoverConfig().as_ref()
+        None
     }
 
     fn discovered_projects(&self) -> Vec<ManifestOrProjectJson> {
@@ -1630,14 +632,7 @@ impl Config {
     }
 
     pub fn linked_or_discovered_projects(&self) -> Vec<LinkedProject> {
-        let linked_projects = self.linkedProjects();
-        let projects = if linked_projects.is_empty() {
-            self.discovered_projects()
-        } else {
-            linked_projects.clone()
-        };
-
-        projects
+        self.discovered_projects()
             .iter()
             .filter_map(|linked_project| match linked_project {
                 ManifestOrProjectJson::Manifest(it) => {
@@ -1659,109 +654,39 @@ impl Config {
             .collect()
     }
 
-    pub fn prefill_caches(&self) -> bool {
-        self.cachePriming_enable().to_owned()
-    }
-
-    pub fn publish_diagnostics(&self) -> bool {
-        self.diagnostics_enable().to_owned()
-    }
-
     pub fn diagnostics_map(&self) -> DiagnosticsMapConfig {
         DiagnosticsMapConfig {
-            remap_prefix: self.diagnostics_remapPrefix().clone(),
-            warnings_as_info: self.diagnostics_warningsAsInfo().clone(),
-            warnings_as_hint: self.diagnostics_warningsAsHint().clone(),
-            check_ignore: self.check_ignore().clone(),
+            remap_prefix: FxHashMap::default(),
+            warnings_as_info: Vec::new(),
+            warnings_as_hint: Vec::new(),
+            check_ignore: FxHashSet::default(),
         }
-    }
-
-    pub fn lru_parse_query_capacity(&self) -> Option<u16> {
-        self.lru_capacity().to_owned()
-    }
-
-    pub fn lru_query_capacities_config(&self) -> Option<&FxHashMap<Box<str>, u16>> {
-        self.lru_query_capacities().is_empty().not().then(|| self.lru_query_capacities())
-    }
-
-    pub fn proc_macro_srv(&self) -> Option<AbsPathBuf> {
-        let path = self.procMacro_server().clone()?;
-        Some(AbsPathBuf::try_from(path).unwrap_or_else(|path| self.root_path.join(path)))
-    }
-
-    pub fn dhat_output_file(&self) -> Option<AbsPathBuf> {
-        let path = self.profiling_memoryProfile().clone()?;
-        Some(AbsPathBuf::try_from(path).unwrap_or_else(|path| self.root_path.join(path)))
-    }
-
-    pub fn ignored_proc_macros(&self) -> &FxHashMap<Box<str>, Box<[Box<str>]>> {
-        self.procMacro_ignored()
-    }
-
-    pub fn expand_proc_macros(&self) -> bool {
-        self.procMacro_enable().to_owned()
     }
 
     pub fn files(&self) -> FilesConfig {
         FilesConfig {
-            watcher: match self.files_watcher() {
-                FilesWatcherDef::Client if self.did_change_watched_files_dynamic_registration() => {
-                    FilesWatcher::Client
-                }
-                _ => FilesWatcher::Server,
+            watcher: if self.did_change_watched_files_dynamic_registration() {
+                FilesWatcher::Client
+            } else {
+                FilesWatcher::Server
             },
         }
     }
 
     pub fn notifications(&self) -> NotificationsConfig {
-        NotificationsConfig {
-            cargo_toml_not_found: self.notifications_cargoTomlNotFound().to_owned(),
-        }
-    }
-
-    pub fn cargo_autoreload_config(&self) -> bool {
-        self.cargo_autoreload().to_owned()
-    }
-
-    pub fn run_build_scripts(&self) -> bool {
-        self.cargo_buildScripts_enable().to_owned() || self.procMacro_enable().to_owned()
+        NotificationsConfig { cargo_toml_not_found: true }
     }
 
     pub fn cargo(&self) -> CargoConfig {
-        let rustc_source = self.rustc_source().as_ref().map(|rustc_src| {
-            if rustc_src == "discover" {
-                RustLibSource::Discover
-            } else {
-                RustLibSource::Path(self.root_path.join(rustc_src))
-            }
-        });
-        let sysroot = self.cargo_sysroot().as_ref().map(|sysroot| {
-            if sysroot == "discover" {
-                RustLibSource::Discover
-            } else {
-                RustLibSource::Path(self.root_path.join(sysroot))
-            }
-        });
-        let sysroot_src =
-            self.cargo_sysrootSrc().as_ref().map(|sysroot| self.root_path.join(sysroot));
-        let extra_includes = self
-            .vfs_extraIncludes()
-            .iter()
-            .map(String::as_str)
-            .map(AbsPathBuf::try_from)
-            .filter_map(Result::ok)
-            .collect();
+        let rustc_source = None;
+        let sysroot = Some(RustLibSource::Discover);
+        let sysroot_src = None;
+        let extra_includes = Vec::new();
 
         CargoConfig {
-            all_targets: *self.cargo_allTargets(),
-            features: match &self.cargo_features() {
-                CargoFeaturesDef::All => CargoFeatures::All,
-                CargoFeaturesDef::Selected(features) => CargoFeatures::Selected {
-                    features: features.clone(),
-                    no_default_features: self.cargo_noDefaultFeatures().to_owned(),
-                },
-            },
-            target: self.cargo_target().clone(),
+            all_targets: true,
+            features: CargoFeatures::Selected { features: vec![], no_default_features: false },
+            target: None,
             sysroot,
             sysroot_src,
             rustc_source,
@@ -1769,14 +694,14 @@ impl Config {
             cfg_overrides: project_model::CfgOverrides {
                 global: {
                     let (enabled, disabled): (Vec<_>, Vec<_>) =
-                        self.cargo_cfgs().iter().partition_map(|s| {
+                        ["debug_assertions", "miri"].iter().partition_map(|s| {
                             s.strip_prefix("!").map_or(Either::Left(s), Either::Right)
                         });
                     CfgDiff::new(
                         enabled
                             .into_iter()
                             // parse any cfg setting formatted as key=value or just key (without value)
-                            .map(|s| match s.split_once("=") {
+                            .map(|s: &str| match s.split_once("=") {
                                 Some((key, val)) => CfgAtom::KeyValue {
                                     key: Symbol::intern(key),
                                     value: Symbol::intern(val),
@@ -1798,141 +723,54 @@ impl Config {
                 },
                 selective: Default::default(),
             },
-            wrap_rustc_in_build_scripts: *self.cargo_buildScripts_useRustcWrapper(),
-            invocation_strategy: match self.cargo_buildScripts_invocationStrategy() {
-                InvocationStrategy::Once => project_model::InvocationStrategy::Once,
-                InvocationStrategy::PerWorkspace => project_model::InvocationStrategy::PerWorkspace,
-            },
-            run_build_script_command: self.cargo_buildScripts_overrideCommand().clone(),
-            target_dir: self.target_dir_from_config(),
-            set_test: *self.cfg_setTest(),
-            no_deps: *self.cargo_noDeps(),
+            wrap_rustc_in_build_scripts: true,
+            invocation_strategy: project_model::InvocationStrategy::PerWorkspace,
+            run_build_script_command: None,
+            target_dir: None,
+            set_test: true,
+            no_deps: false,
         }
-    }
-
-    pub fn cfg_set_test(&self) -> bool {
-        *self.cfg_setTest()
     }
 
     pub fn rustfmt(&self) -> RustfmtConfig {
-        match &self.rustfmt_overrideCommand() {
-            Some(args) if !args.is_empty() => {
-                let mut args = args.clone();
-                let command = args.remove(0);
-                RustfmtConfig::CustomCommand { command, args }
-            }
-            Some(_) | None => RustfmtConfig::Rustfmt {
-                enable_range_formatting: *self.rustfmt_rangeFormatting_enable(),
-            },
-        }
-    }
-
-    pub fn flycheck_workspace(&self) -> bool {
-        *self.check_workspace()
+        RustfmtConfig::Rustfmt { enable_range_formatting: false }
     }
 
     pub(crate) fn cargo_test_options(&self) -> CargoOptions {
         CargoOptions {
-            target_tuples: self.cargo_target().clone().into_iter().collect(),
+            target_tuples: vec![],
             all_targets: false,
-            no_default_features: *self.cargo_noDefaultFeatures(),
-            all_features: matches!(self.cargo_features(), CargoFeaturesDef::All),
-            features: match self.cargo_features().clone() {
-                CargoFeaturesDef::All => vec![],
-                CargoFeaturesDef::Selected(it) => it,
-            },
-            extra_test_bin_args: self.runnables_extraTestBinaryArgs().clone(),
-            target_dir: self.target_dir_from_config(),
+            no_default_features: false,
+            all_features: false,
+            features: Vec::new(),
+            extra_test_bin_args: vec!["--nocapture".to_owned()],
+            target_dir: None,
             set_test: true,
         }
     }
 
     pub(crate) fn flycheck(&self) -> FlycheckConfig {
-        match &self.check_overrideCommand() {
-            Some(args) if !args.is_empty() => {
-                let mut args = args.clone();
-                let command = args.remove(0);
-                FlycheckConfig::CustomCommand {
-                    command,
-                    args,
-                    invocation_strategy: match self.check_invocationStrategy() {
-                        InvocationStrategy::Once => crate::flycheck::InvocationStrategy::Once,
-                        InvocationStrategy::PerWorkspace => {
-                            crate::flycheck::InvocationStrategy::PerWorkspace
-                        }
-                    },
-                }
-            }
-            Some(_) | None => FlycheckConfig::CargoCommand {
-                command: self.check_command().clone(),
-                options: CargoOptions {
-                    target_tuples: self
-                        .check_targets()
-                        .clone()
-                        .and_then(|targets| match &targets.0[..] {
-                            [] => None,
-                            targets => Some(targets.into()),
-                        })
-                        .unwrap_or_else(|| self.cargo_target().clone().into_iter().collect()),
-                    all_targets: self.check_allTargets().unwrap_or(*self.cargo_allTargets()),
-                    no_default_features: self
-                        .check_noDefaultFeatures()
-                        .unwrap_or(*self.cargo_noDefaultFeatures()),
-                    all_features: matches!(
-                        self.check_features().as_ref().unwrap_or(self.cargo_features()),
-                        CargoFeaturesDef::All
-                    ),
-                    features: match self
-                        .check_features()
-                        .clone()
-                        .unwrap_or_else(|| self.cargo_features().clone())
-                    {
-                        CargoFeaturesDef::All => vec![],
-                        CargoFeaturesDef::Selected(it) => it,
-                    },
-                    extra_test_bin_args: self.runnables_extraTestBinaryArgs().clone(),
-                    target_dir: self.target_dir_from_config(),
-                    set_test: *self.cfg_setTest(),
-                },
-                ansi_color_output: self.color_diagnostic_output(),
+        FlycheckConfig::CargoCommand {
+            command: "check".to_string(),
+            options: CargoOptions {
+                target_tuples: Vec::new(),
+                all_targets: true,
+                no_default_features: false,
+                all_features: false,
+                features: Vec::new(),
+                extra_test_bin_args: vec!["--nocapture".to_owned()],
+                target_dir: None,
+                set_test: true,
             },
+            ansi_color_output: self.color_diagnostic_output(),
         }
-    }
-
-    fn target_dir_from_config(&self) -> Option<Utf8PathBuf> {
-        self.cargo_targetDir().as_ref().and_then(|target_dir| match target_dir {
-            TargetDirectory::UseSubdirectory(true) => {
-                let env_var = env::var("CARGO_TARGET_DIR").ok();
-                let mut path = Utf8PathBuf::from(env_var.as_deref().unwrap_or("target"));
-                path.push("rust-analyzer");
-                Some(path)
-            }
-            TargetDirectory::UseSubdirectory(false) => None,
-            TargetDirectory::Directory(dir) => Some(dir.clone()),
-        })
-    }
-
-    pub fn check_on_save(&self) -> bool {
-        *self.checkOnSave()
-    }
-
-    pub fn script_rebuild_on_save(&self) -> bool {
-        *self.cargo_buildScripts_rebuildOnSave()
     }
 
     pub fn runnables(&self) -> RunnablesConfig {
         RunnablesConfig {
-            override_cargo: self.runnables_command().clone(),
-            extra_test_binary_args: self.runnables_extraTestBinaryArgs().clone(),
+            override_cargo: None,
+            extra_test_binary_args: vec!["--nocapture".to_owned()],
         }
-    }
-
-    pub fn find_all_refs_exclude_imports(&self) -> bool {
-        *self.references_excludeImports()
-    }
-
-    pub fn find_all_refs_exclude_tests(&self) -> bool {
-        *self.references_excludeTests()
     }
 
     pub fn snippet_cap(&self) -> Option<SnippetCap> {
@@ -1942,56 +780,39 @@ impl Config {
     }
 
     pub fn call_info(&self) -> CallInfoConfig {
-        CallInfoConfig {
-            params_only: matches!(self.signatureInfo_detail(), SignatureDetail::Parameters),
-            docs: *self.signatureInfo_documentation_enable(),
-        }
+        CallInfoConfig { params_only: false, docs: true }
     }
 
     pub fn lens(&self) -> LensConfig {
         LensConfig {
-            run: *self.lens_enable() && *self.lens_run_enable(),
-            debug: *self.lens_enable() && *self.lens_debug_enable(),
-            update_test: *self.lens_enable()
-                && *self.lens_updateTest_enable()
-                && *self.lens_run_enable(),
-            interpret: *self.lens_enable() && *self.lens_run_enable() && *self.interpret_tests(),
-            implementations: *self.lens_enable() && *self.lens_implementations_enable(),
-            method_refs: *self.lens_enable() && *self.lens_references_method_enable(),
-            refs_adt: *self.lens_enable() && *self.lens_references_adt_enable(),
-            refs_trait: *self.lens_enable() && *self.lens_references_trait_enable(),
-            enum_variant_refs: *self.lens_enable() && *self.lens_references_enumVariant_enable(),
-            location: *self.lens_location(),
-            filter_adjacent_derive_implementations: *self
-                .gotoImplementations_filterAdjacentDerives(),
+            run: true,
+            debug: true,
+            update_test: true,
+            interpret: false,
+            implementations: true,
+            method_refs: false,
+            refs_adt: false,
+            refs_trait: false,
+            enum_variant_refs: false,
+            location: AnnotationLocation::AboveName,
+            filter_adjacent_derive_implementations: false,
         }
     }
 
     pub fn goto_implementation(&self) -> GotoImplementationConfig {
-        GotoImplementationConfig {
-            filter_adjacent_derive_implementations: *self
-                .gotoImplementations_filterAdjacentDerives(),
-        }
+        GotoImplementationConfig { filter_adjacent_derive_implementations: false }
     }
 
     pub fn document_symbol(&self) -> DocumentSymbolConfig {
-        DocumentSymbolConfig { search_exclude_locals: *self.document_symbol_search_excludeLocals() }
+        DocumentSymbolConfig { search_exclude_locals: true }
     }
 
     pub fn workspace_symbol(&self) -> WorkspaceSymbolConfig {
         WorkspaceSymbolConfig {
-            search_exclude_imports: *self.workspace_symbol_search_excludeImports(),
-            search_scope: match self.workspace_symbol_search_scope() {
-                WorkspaceSymbolSearchScopeDef::Workspace => WorkspaceSymbolSearchScope::Workspace,
-                WorkspaceSymbolSearchScopeDef::WorkspaceAndDependencies => {
-                    WorkspaceSymbolSearchScope::WorkspaceAndDependencies
-                }
-            },
-            search_kind: match self.workspace_symbol_search_kind() {
-                WorkspaceSymbolSearchKindDef::OnlyTypes => WorkspaceSymbolSearchKind::OnlyTypes,
-                WorkspaceSymbolSearchKindDef::AllSymbols => WorkspaceSymbolSearchKind::AllSymbols,
-            },
-            search_limit: *self.workspace_symbol_search_limit(),
+            search_exclude_imports: false,
+            search_scope: WorkspaceSymbolSearchScope::Workspace,
+            search_kind: WorkspaceSymbolSearchKind::OnlyTypes,
+            search_limit: 128,
         }
     }
 
@@ -2011,25 +832,15 @@ impl Config {
     }
 
     pub fn prime_caches_num_threads(&self) -> usize {
-        match self.cachePriming_numThreads() {
-            NumThreads::Concrete(0) | NumThreads::Physical => num_cpus::get_physical(),
-            &NumThreads::Concrete(n) => n,
-            NumThreads::Logical => num_cpus::get(),
-        }
+        num_cpus::get_physical()
     }
 
     pub fn main_loop_num_threads(&self) -> usize {
-        match self.numThreads() {
-            Some(NumThreads::Concrete(0)) | None | Some(NumThreads::Physical) => {
-                num_cpus::get_physical()
-            }
-            &Some(NumThreads::Concrete(n)) => n,
-            Some(NumThreads::Logical) => num_cpus::get(),
-        }
+        num_cpus::get_physical()
     }
 
     pub fn typing_trigger_chars(&self) -> &str {
-        self.typing_triggerChars().as_deref().unwrap_or_default()
+        "=."
     }
 
     // VSCode is our reference implementation, so we allow ourselves to work around issues by
@@ -2045,133 +856,8 @@ impl Config {
         self.client_info.as_ref().map(|it| it.name == "Neovim").unwrap_or_default()
     }
 }
+
 // Deserialization definitions
-
-macro_rules! create_bool_or_string_serde {
-    ($ident:ident<$bool:literal, $string:literal>) => {
-        mod $ident {
-            pub(super) fn deserialize<'de, D>(d: D) -> Result<(), D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                struct V;
-                impl<'de> serde::de::Visitor<'de> for V {
-                    type Value = ();
-
-                    fn expecting(
-                        &self,
-                        formatter: &mut std::fmt::Formatter<'_>,
-                    ) -> std::fmt::Result {
-                        formatter.write_str(concat!(
-                            stringify!($bool),
-                            " or \"",
-                            stringify!($string),
-                            "\""
-                        ))
-                    }
-
-                    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-                    where
-                        E: serde::de::Error,
-                    {
-                        match v {
-                            $bool => Ok(()),
-                            _ => Err(serde::de::Error::invalid_value(
-                                serde::de::Unexpected::Bool(v),
-                                &self,
-                            )),
-                        }
-                    }
-
-                    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-                    where
-                        E: serde::de::Error,
-                    {
-                        match v {
-                            $string => Ok(()),
-                            _ => Err(serde::de::Error::invalid_value(
-                                serde::de::Unexpected::Str(v),
-                                &self,
-                            )),
-                        }
-                    }
-
-                    fn visit_enum<A>(self, a: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: serde::de::EnumAccess<'de>,
-                    {
-                        use serde::de::VariantAccess;
-                        let (variant, va) = a.variant::<&'de str>()?;
-                        va.unit_variant()?;
-                        match variant {
-                            $string => Ok(()),
-                            _ => Err(serde::de::Error::invalid_value(
-                                serde::de::Unexpected::Str(variant),
-                                &self,
-                            )),
-                        }
-                    }
-                }
-                d.deserialize_any(V)
-            }
-
-            pub(super) fn serialize<S>(serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                serializer.serialize_str($string)
-            }
-        }
-    };
-}
-create_bool_or_string_serde!(true_or_always<true, "always">);
-create_bool_or_string_serde!(false_or_never<false, "never">);
-
-mod single_or_array {
-    use serde::{Deserialize, Serialize};
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct SingleOrVec;
-
-        impl<'de> serde::de::Visitor<'de> for SingleOrVec {
-            type Value = Vec<String>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("string or array of strings")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(vec![value.to_owned()])
-            }
-
-            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
-            }
-        }
-
-        deserializer.deserialize_any(SingleOrVec)
-    }
-
-    pub(super) fn serialize<S>(vec: &[String], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match vec {
-            // []  case is handled by skip_serializing_if
-            [single] => serializer.serialize_str(single),
-            slice => slice.serialize(serializer),
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(untagged)]
@@ -2205,14 +891,6 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ExprFillDefaultDef {
-    Todo,
-    Default,
-    Underscore,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoImportExclusion {
@@ -2226,463 +904,3 @@ pub enum AutoImportExclusionType {
     Always,
     Methods,
 }
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ImportGranularityDef {
-    Preserve,
-    Item,
-    Crate,
-    Module,
-    One,
-}
-
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CallableCompletionDef {
-    FillArguments,
-    AddParentheses,
-    None,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum CargoFeaturesDef {
-    All,
-    #[serde(untagged)]
-    Selected(Vec<String>),
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum InvocationStrategy {
-    Once,
-    PerWorkspace,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct CheckOnSaveTargets(#[serde(with = "single_or_array")] Vec<String>);
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum LifetimeElisionDef {
-    SkipTrivial,
-    #[serde(with = "true_or_always")]
-    #[serde(untagged)]
-    Always,
-    #[serde(with = "false_or_never")]
-    #[serde(untagged)]
-    Never,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ClosureReturnTypeHintsDef {
-    WithBlock,
-    #[serde(with = "true_or_always")]
-    #[serde(untagged)]
-    Always,
-    #[serde(with = "false_or_never")]
-    #[serde(untagged)]
-    Never,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ClosureStyle {
-    ImplFn,
-    RustAnalyzer,
-    WithId,
-    Hide,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ReborrowHintsDef {
-    Mutable,
-    #[serde(with = "true_or_always")]
-    #[serde(untagged)]
-    Always,
-    #[serde(with = "false_or_never")]
-    #[serde(untagged)]
-    Never,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum AdjustmentHintsDef {
-    #[serde(alias = "reborrow")]
-    Borrows,
-    #[serde(with = "true_or_always")]
-    #[serde(untagged)]
-    Always,
-    #[serde(with = "false_or_never")]
-    #[serde(untagged)]
-    Never,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum DiscriminantHintsDef {
-    Fieldless,
-    #[serde(with = "true_or_always")]
-    #[serde(untagged)]
-    Always,
-    #[serde(with = "false_or_never")]
-    #[serde(untagged)]
-    Never,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum AdjustmentHintsModeDef {
-    Prefix,
-    Postfix,
-    PreferPrefix,
-    PreferPostfix,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum FilesWatcherDef {
-    Client,
-    Notify,
-    Server,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum ImportPrefixDef {
-    Plain,
-    #[serde(rename = "self")]
-    #[serde(alias = "by_self")]
-    BySelf,
-    #[serde(rename = "crate")]
-    #[serde(alias = "by_crate")]
-    ByCrate,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum WorkspaceSymbolSearchScopeDef {
-    Workspace,
-    WorkspaceAndDependencies,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum SignatureDetail {
-    Full,
-    Parameters,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-enum WorkspaceSymbolSearchKindDef {
-    OnlyTypes,
-    AllSymbols,
-}
-
-#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum MemoryLayoutHoverRenderKindDef {
-    Decimal,
-    Hexadecimal,
-    Both,
-}
-
-#[test]
-fn untagged_option_hover_render_kind() {
-    let hex = MemoryLayoutHoverRenderKindDef::Hexadecimal;
-
-    let ser = serde_json::to_string(&Some(hex)).unwrap();
-    assert_eq!(&ser, "\"hexadecimal\"");
-
-    let opt: Option<_> = serde_json::from_str("\"hexadecimal\"").unwrap();
-    assert_eq!(opt, Some(hex));
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-#[serde(untagged)]
-pub enum TargetDirectory {
-    UseSubdirectory(bool),
-    Directory(Utf8PathBuf),
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NumThreads {
-    Physical,
-    Logical,
-    #[serde(untagged)]
-    Concrete(usize),
-}
-
-macro_rules! _default_val {
-    ($default:expr, $ty:ty) => {{
-        let default_: $ty = $default;
-        default_
-    }};
-}
-use _default_val as default_val;
-
-macro_rules! _default_str {
-    ($default:expr, $ty:ty) => {{
-        let val = default_val!($default, $ty);
-        serde_json::to_string_pretty(&val).unwrap()
-    }};
-}
-use _default_str as default_str;
-
-macro_rules! _impl_for_config_data {
-    (local, $(
-            $(#[doc=$doc:literal])*
-            $vis:vis $field:ident : $ty:ty = $default:expr,
-        )*
-    ) => {
-        impl Config {
-            $(
-                $($doc)*
-                #[allow(non_snake_case)]
-                $vis fn $field(&self) -> &$ty {
-                    &self.default_config.local.$field
-                }
-            )*
-        }
-    };
-    (workspace, $(
-            $(#[doc=$doc:literal])*
-            $vis:vis $field:ident : $ty:ty = $default:expr,
-        )*
-    ) => {
-        impl Config {
-            $(
-                $($doc)*
-                #[allow(non_snake_case)]
-                $vis fn $field(&self) -> &$ty {
-                    &self.default_config.workspace.$field
-                }
-            )*
-        }
-    };
-    (global, $(
-            $(#[doc=$doc:literal])*
-            $vis:vis $field:ident : $ty:ty = $default:expr,
-        )*
-    ) => {
-        impl Config {
-            $(
-                $($doc)*
-                #[allow(non_snake_case)]
-                $vis fn $field(&self) -> &$ty {
-                    &self.default_config.global.$field
-                }
-            )*
-        }
-    };
-    (client, $(
-            $(#[doc=$doc:literal])*
-            $vis:vis $field:ident : $ty:ty = $default:expr,
-       )*
-    ) => {
-        impl Config {
-            $(
-                $($doc)*
-                #[allow(non_snake_case)]
-                $vis fn $field(&self) -> &$ty {
-                    &self.default_config.client.$field
-                }
-            )*
-        }
-    };
-}
-use _impl_for_config_data as impl_for_config_data;
-
-macro_rules! _config_data {
-    // modname is for the tests
-    ($(#[doc=$dox:literal])* $modname:ident: struct $name:ident <- $input:ident -> {
-        $(
-            $(#[doc=$doc:literal])*
-            $vis:vis $field:ident $(| $alias:ident)*: $ty:ty = $default:expr,
-        )*
-    }) => {
-        /// Default config values for this grouping.
-        #[allow(non_snake_case)]
-        #[derive(Debug, Clone)]
-        struct $name { $($field: $ty,)* }
-
-        impl_for_config_data!{
-            $modname,
-            $(
-                $vis $field : $ty = $default,
-            )*
-        }
-
-        /// All fields `Option<T>`, `None` representing fields not set in a particular JSON/TOML blob.
-        #[allow(non_snake_case)]
-        #[derive(Clone, Default)]
-        struct $input { $(
-            $field: Option<$ty>,
-        )* }
-
-        impl std::fmt::Debug for $input {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let mut s = f.debug_struct(stringify!($input));
-                $(
-                    if let Some(val) = self.$field.as_ref() {
-                        s.field(stringify!($field), val);
-                    }
-                )*
-                s.finish()
-            }
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                $name {$(
-                    $field: default_val!($default, $ty),
-                )*}
-            }
-        }
-
-        #[allow(unused, clippy::ptr_arg)]
-        impl $input {
-            const FIELDS: &'static [&'static str] = &[$(stringify!($field)),*];
-
-            fn from_json(json: &mut serde_json::Value, error_sink: &mut Vec<(String, serde_json::Error)>) -> Self {
-                Self {$(
-                    $field: get_field_json(
-                        json,
-                        error_sink,
-                        stringify!($field),
-                        None$(.or(Some(stringify!($alias))))*,
-                    ),
-                )*}
-            }
-
-            fn from_toml(toml: &toml::Table, error_sink: &mut Vec<(String, toml::de::Error)>) -> Self {
-                Self {$(
-                    $field: get_field_toml::<$ty>(
-                        toml,
-                        error_sink,
-                        stringify!($field),
-                        None$(.or(Some(stringify!($alias))))*,
-                    ),
-                )*}
-            }
-
-            fn schema_fields(sink: &mut Vec<SchemaField>) {
-                sink.extend_from_slice(&[
-                    $({
-                        let field = stringify!($field);
-                        let ty = stringify!($ty);
-                        let default = default_str!($default, $ty);
-
-                        (field, ty, &[$($doc),*], default)
-                    },)*
-                ])
-            }
-        }
-
-        mod $modname {
-            #[test]
-            fn fields_are_sorted() {
-                super::$input::FIELDS.windows(2).for_each(|w| assert!(w[0] <= w[1], "{} <= {} does not hold", w[0], w[1]));
-            }
-        }
-    };
-}
-use _config_data as config_data;
-
-#[derive(Default, Debug, Clone)]
-struct DefaultConfigData {
-    global: GlobalDefaultConfigData,
-    workspace: WorkspaceDefaultConfigData,
-    local: LocalDefaultConfigData,
-    client: ClientDefaultConfigData,
-}
-
-fn get_field_json<T: DeserializeOwned>(
-    json: &mut serde_json::Value,
-    error_sink: &mut Vec<(String, serde_json::Error)>,
-    field: &'static str,
-    alias: Option<&'static str>,
-) -> Option<T> {
-    // XXX: check alias first, to work around the VS Code where it pre-fills the
-    // defaults instead of sending an empty object.
-    alias
-        .into_iter()
-        .chain(iter::once(field))
-        .filter_map(move |field| {
-            let mut pointer = field.replace('_', "/");
-            pointer.insert(0, '/');
-            json.pointer_mut(&pointer)
-                .map(|it| serde_json::from_value(it.take()).map_err(|e| (e, pointer)))
-        })
-        .flat_map(|res| match res {
-            Ok(it) => Some(it),
-            Err((e, pointer)) => {
-                tracing::warn!("Failed to deserialize config field at {}: {:?}", pointer, e);
-                error_sink.push((pointer, e));
-                None
-            }
-        })
-        .next()
-}
-
-fn get_field_toml<T: DeserializeOwned>(
-    toml: &toml::Table,
-    error_sink: &mut Vec<(String, toml::de::Error)>,
-    field: &'static str,
-    alias: Option<&'static str>,
-) -> Option<T> {
-    // XXX: check alias first, to work around the VS Code where it pre-fills the
-    // defaults instead of sending an empty object.
-    alias
-        .into_iter()
-        .chain(iter::once(field))
-        .filter_map(move |field| {
-            let mut pointer = field.replace('_', "/");
-            pointer.insert(0, '/');
-            toml_pointer(toml, &pointer)
-                .map(|it| <_>::deserialize(it.clone()).map_err(|e| (e, pointer)))
-        })
-        .find(Result::is_ok)
-        .and_then(|res| match res {
-            Ok(it) => Some(it),
-            Err((e, pointer)) => {
-                tracing::warn!("Failed to deserialize config field at {}: {:?}", pointer, e);
-                error_sink.push((pointer, e));
-                None
-            }
-        })
-}
-
-fn toml_pointer<'a>(toml: &'a toml::Table, pointer: &str) -> Option<&'a toml::Value> {
-    fn parse_index(s: &str) -> Option<usize> {
-        if s.starts_with('+') || (s.starts_with('0') && s.len() != 1) {
-            return None;
-        }
-        s.parse().ok()
-    }
-
-    if pointer.is_empty() {
-        return None;
-    }
-    if !pointer.starts_with('/') {
-        return None;
-    }
-    let mut parts = pointer.split('/').skip(1);
-    let first = parts.next()?;
-    let init = toml.get(first)?;
-    parts.map(|x| x.replace("~1", "/").replace("~0", "~")).try_fold(init, |target, token| {
-        match target {
-            toml::Value::Table(table) => table.get(&token),
-            toml::Value::Array(list) => parse_index(&token).and_then(move |x| list.get(x)),
-            _ => None,
-        }
-    })
-}
-
-type SchemaField = (&'static str, &'static str, &'static [&'static str], String);

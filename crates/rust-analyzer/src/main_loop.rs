@@ -14,12 +14,11 @@ use lsp_server::{Connection, Notification, Request};
 use lsp_types::{TextDocumentIdentifier, notification::Notification as _};
 use stdx::thread::ThreadIntent;
 use tracing::{Level, error, span};
-use vfs::{AbsPathBuf, FileId, loader::LoadingProgress};
+use vfs::{FileId, loader::LoadingProgress};
 
 use crate::{
     config::Config,
     diagnostics::{DiagnosticsGeneration, NativeDiagnosticsFetchKind, fetch_native_diagnostics},
-    discover::{DiscoverArgument, DiscoverCommand, DiscoverProjectMessage},
     flycheck::{self, ClearDiagnosticsKind, ClearScope, FlycheckMessage},
     global_state::{
         FetchBuildDataResponse, FetchWorkspaceRequest, FetchWorkspaceResponse, GlobalState,
@@ -78,7 +77,6 @@ enum Event {
     Vfs(vfs::loader::Message),
     Flycheck(FlycheckMessage),
     TestResult(CargoTestMessage),
-    DiscoverProject(DiscoverProjectMessage),
     FetchWorkspaces(FetchWorkspaceRequest),
 }
 
@@ -91,7 +89,6 @@ impl fmt::Display for Event {
             Event::Flycheck(_) => write!(f, "Event::Flycheck"),
             Event::QueuedTask(_) => write!(f, "Event::QueuedTask"),
             Event::TestResult(_) => write!(f, "Event::TestResult"),
-            Event::DiscoverProject(_) => write!(f, "Event::DiscoverProject"),
             Event::FetchWorkspaces(_) => write!(f, "Event::SwitchWorkspaces"),
         }
     }
@@ -99,7 +96,7 @@ impl fmt::Display for Event {
 
 #[derive(Debug)]
 pub(crate) enum QueuedTask {
-    CheckIfIndexed(lsp_types::Url),
+    // CheckIfIndexed(lsp_types::Url),
     CheckProcMacroSources(Vec<FileId>),
 }
 
@@ -112,7 +109,7 @@ pub(crate) enum DiagnosticsTaskKind {
 #[derive(Debug)]
 pub(crate) enum Task {
     Response(lsp_server::Response),
-    DiscoverLinkedProjects(DiscoverProjectParam),
+    // DiscoverLinkedProjects(DiscoverProjectParam),
     Retry(lsp_server::Request),
     Diagnostics(DiagnosticsTaskKind),
     DiscoverTest(lsp_ext::DiscoverTestResults),
@@ -122,12 +119,6 @@ pub(crate) enum Task {
     LoadProcMacros(ProcMacroProgress),
     // FIXME: Remove this in favor of a more general QueuedTask, see `handle_did_save_text_document`
     BuildDepsHaveChanged,
-}
-
-#[derive(Debug)]
-pub(crate) enum DiscoverProjectParam {
-    Buildfile(AbsPathBuf),
-    Path(AbsPathBuf),
 }
 
 #[derive(Debug)]
@@ -168,7 +159,6 @@ impl fmt::Debug for Event {
             Event::Vfs(it) => fmt::Debug::fmt(it, f),
             Event::Flycheck(it) => fmt::Debug::fmt(it, f),
             Event::TestResult(it) => fmt::Debug::fmt(it, f),
-            Event::DiscoverProject(it) => fmt::Debug::fmt(it, f),
             Event::FetchWorkspaces(it) => fmt::Debug::fmt(it, f),
         }
     }
@@ -179,26 +169,17 @@ impl GlobalState {
         self.update_status_or_notify();
 
         if self.config.did_save_text_document_dynamic_registration() {
-            let additional_patterns = self
-                .config
-                .discover_workspace_config()
-                .map(|cfg| cfg.files_to_watch.clone().into_iter())
-                .into_iter()
-                .flatten()
-                .map(|f| format!("**/{f}"));
-            self.register_did_save_capability(additional_patterns);
+            self.register_did_save_capability();
         }
 
-        if self.config.discover_workspace_config().is_none() {
-            self.fetch_workspaces_queue.request_op(
-                "startup".to_owned(),
-                FetchWorkspaceRequest { path: None, force_crate_graph_reload: false },
-            );
-            if let Some((cause, FetchWorkspaceRequest { path, force_crate_graph_reload })) =
-                self.fetch_workspaces_queue.should_start_op()
-            {
-                self.fetch_workspaces(cause, path, force_crate_graph_reload);
-            }
+        self.fetch_workspaces_queue.request_op(
+            "startup".to_owned(),
+            FetchWorkspaceRequest { force_crate_graph_reload: false },
+        );
+        if let Some((cause, FetchWorkspaceRequest { force_crate_graph_reload })) =
+            self.fetch_workspaces_queue.should_start_op()
+        {
+            self.fetch_workspaces(cause, force_crate_graph_reload);
         }
 
         while let Ok(event) = self.next_event(&inbox) {
@@ -218,14 +199,8 @@ impl GlobalState {
         Err(anyhow::anyhow!("A receiver has been dropped, something panicked!"))
     }
 
-    fn register_did_save_capability(&mut self, additional_patterns: impl Iterator<Item = String>) {
-        let additional_filters = additional_patterns.map(|pattern| lsp_types::DocumentFilter {
-            language: None,
-            scheme: None,
-            pattern: (Some(pattern)),
-        });
-
-        let mut selectors = vec![
+    fn register_did_save_capability(&mut self) {
+        let selectors = vec![
             lsp_types::DocumentFilter {
                 language: None,
                 scheme: None,
@@ -242,7 +217,6 @@ impl GlobalState {
                 pattern: Some("**/Cargo.lock".into()),
             },
         ];
-        selectors.extend(additional_filters);
 
         let save_registration_options = lsp_types::TextDocumentSaveRegistrationOptions {
             include_text: Some(false),
@@ -292,9 +266,6 @@ impl GlobalState {
 
             recv(self.test_run_receiver) -> task =>
                 task.map(Event::TestResult),
-
-            recv(self.discover_receiver) -> task =>
-                task.map(Event::DiscoverProject),
 
             recv(self.fetch_ws_receiver.as_ref().map_or(&never(), |(chan, _)| chan)) -> _instant => {
                 Ok(Event::FetchWorkspaces(self.fetch_ws_receiver.take().unwrap().1))
@@ -421,13 +392,6 @@ impl GlobalState {
                     self.handle_cargo_test_msg(message);
                 }
             }
-            Event::DiscoverProject(message) => {
-                self.handle_discover_msg(message);
-                // Coalesce many project discovery events into a single loop turn.
-                while let Ok(message) = self.discover_receiver.try_recv() {
-                    self.handle_discover_msg(message);
-                }
-            }
             Event::FetchWorkspaces(req) => {
                 self.fetch_workspaces_queue.request_op("project structure change".to_owned(), req)
             }
@@ -445,16 +409,11 @@ impl GlobalState {
         if self.is_quiescent() {
             let became_quiescent = !was_quiescent;
             if became_quiescent {
-                if self.config.check_on_save()
-                    && self.config.flycheck_workspace()
-                    && !self.fetch_build_data_queue.op_requested()
-                {
+                if !self.fetch_build_data_queue.op_requested() {
                     // Project has loaded properly, kick off initial flycheck
                     self.flycheck.iter().for_each(|flycheck| flycheck.restart_workspace(None));
                 }
-                if self.config.prefill_caches() {
-                    self.prime_caches_queue.request_op("became quiescent".to_owned(), ());
-                }
+                self.prime_caches_queue.request_op("became quiescent".to_owned(), ());
             }
 
             let client_refresh = became_quiescent || state_changed;
@@ -485,10 +444,7 @@ impl GlobalState {
 
             let project_or_mem_docs_changed =
                 became_quiescent || state_changed || memdocs_added_or_removed;
-            if project_or_mem_docs_changed
-                && !self.config.text_document_diagnostic()
-                && self.config.publish_diagnostics()
-            {
+            if project_or_mem_docs_changed && !self.config.text_document_diagnostic() {
                 self.update_diagnostics();
             }
             if project_or_mem_docs_changed && self.config.test_explorer() {
@@ -509,12 +465,10 @@ impl GlobalState {
             }
         }
 
-        if (self.config.cargo_autoreload_config()
-            || self.config.discover_workspace_config().is_some())
-            && let Some((cause, FetchWorkspaceRequest { path, force_crate_graph_reload })) =
-                self.fetch_workspaces_queue.should_start_op()
+        if let Some((cause, FetchWorkspaceRequest { force_crate_graph_reload })) =
+            self.fetch_workspaces_queue.should_start_op()
         {
-            self.fetch_workspaces(cause, path, force_crate_graph_reload);
+            self.fetch_workspaces(cause, force_crate_graph_reload);
         }
 
         if !self.fetch_workspaces_queue.op_in_progress() {
@@ -764,36 +718,6 @@ impl GlobalState {
 
                 self.report_progress("Fetching", state, msg, None, None);
             }
-            Task::DiscoverLinkedProjects(arg) => {
-                if let Some(cfg) = self.config.discover_workspace_config()
-                    && !self.discover_workspace_queue.op_in_progress()
-                {
-                    // the clone is unfortunately necessary to avoid a borrowck error when
-                    // `self.report_progress` is called later
-                    let title = &cfg.progress_label.clone();
-                    let command = cfg.command.clone();
-                    let discover = DiscoverCommand::new(self.discover_sender.clone(), command);
-
-                    self.report_progress(title, Progress::Begin, None, None, None);
-                    self.discover_workspace_queue
-                        .request_op("Discovering workspace".to_owned(), ());
-                    let _ = self.discover_workspace_queue.should_start_op();
-
-                    let arg = match arg {
-                        DiscoverProjectParam::Buildfile(it) => DiscoverArgument::Buildfile(it),
-                        DiscoverProjectParam::Path(it) => DiscoverArgument::Path(it),
-                    };
-
-                    let handle = discover.spawn(
-                        arg,
-                        &std::env::current_dir()
-                            .expect("Failed to get cwd during project discovery"),
-                    );
-                    self.discover_handle = Some(handle.unwrap_or_else(|e| {
-                        panic!("Failed to spawn project discovery command: {e}")
-                    }));
-                }
-            }
             Task::FetchBuildData(progress) => {
                 let (state, msg) = match progress {
                     BuildDataProgress::Begin => (Some(Progress::Begin), None),
@@ -910,27 +834,27 @@ impl GlobalState {
 
     fn handle_queued_task(&mut self, task: QueuedTask) {
         match task {
-            QueuedTask::CheckIfIndexed(uri) => {
-                let snap = self.snapshot();
+            // QueuedTask::CheckIfIndexed(uri) => {
+            //     let snap = self.snapshot();
 
-                self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |sender| {
-                    let _p = tracing::info_span!("GlobalState::check_if_indexed").entered();
-                    tracing::debug!(?uri, "handling uri");
-                    let id = from_proto::file_id(&snap, &uri).expect("unable to get FileId");
-                    if let Ok(crates) = &snap.analysis.crates_for(id) {
-                        if crates.is_empty() {
-                            if snap.config.discover_workspace_config().is_some() {
-                                let path =
-                                    from_proto::abs_path(&uri).expect("Unable to get AbsPath");
-                                let arg = DiscoverProjectParam::Path(path);
-                                sender.send(Task::DiscoverLinkedProjects(arg)).unwrap();
-                            }
-                        } else {
-                            tracing::debug!(?uri, "is indexed");
-                        }
-                    }
-                });
-            }
+            //     self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |_sender| {
+            //         let _p = tracing::info_span!("GlobalState::check_if_indexed").entered();
+            //         tracing::debug!(?uri, "handling uri");
+            //         let id = from_proto::file_id(&snap, &uri).expect("unable to get FileId");
+            //         if let Ok(crates) = &snap.analysis.crates_for(id) {
+            //             if crates.is_empty() {
+            //                 if snap.config.discover_workspace_config().is_some() {
+            //                     let path =
+            //                         from_proto::abs_path(&uri).expect("Unable to get AbsPath");
+            //                     let arg = DiscoverProjectParam::Path(path);
+            //                     sender.send(Task::DiscoverLinkedProjects(arg)).unwrap();
+            //                 }
+            //             } else {
+            //                 tracing::debug!(?uri, "is indexed");
+            //             }
+            //         }
+            //     });
+            // }
             QueuedTask::CheckProcMacroSources(modified_rust_files) => {
                 let analysis = AssertUnwindSafe(self.snapshot().analysis);
                 self.task_pool.handle.spawn_with_sender(stdx::thread::ThreadIntent::Worker, {
@@ -948,35 +872,6 @@ impl GlobalState {
                         }
                     }
                 });
-            }
-        }
-    }
-
-    fn handle_discover_msg(&mut self, message: DiscoverProjectMessage) {
-        let title = self
-            .config
-            .discover_workspace_config()
-            .map(|cfg| cfg.progress_label.clone())
-            .expect("No title could be found; this is a bug");
-        match message {
-            DiscoverProjectMessage::Finished { project, buildfile } => {
-                self.discover_handle = None;
-                self.report_progress(&title, Progress::End, None, None, None);
-                self.discover_workspace_queue.op_completed(());
-
-                let mut config = Config::clone(&*self.config);
-                config.add_discovered_project_from_command(project, buildfile);
-                self.update_configuration(config);
-            }
-            DiscoverProjectMessage::Progress { message } => {
-                self.report_progress(&title, Progress::Report, Some(message), None, None)
-            }
-            DiscoverProjectMessage::Error { error, source } => {
-                self.discover_handle = None;
-                let message = format!("Project discovery failed: {error}");
-                self.discover_workspace_queue.op_completed(());
-                self.show_and_log_error(message.clone(), source);
-                self.report_progress(&title, Progress::End, Some(message), None, None)
             }
         }
     }

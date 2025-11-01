@@ -27,13 +27,6 @@ use crate::{
     diagnostics::DiagnosticsGeneration,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum InvocationStrategy {
-    Once,
-    #[default]
-    PerWorkspace,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CargoOptions {
     pub(crate) target_tuples: Vec<String>,
@@ -88,18 +81,7 @@ impl CargoOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FlycheckConfig {
     CargoCommand { command: String, options: CargoOptions, ansi_color_output: bool },
-    CustomCommand { command: String, args: Vec<String>, invocation_strategy: InvocationStrategy },
-}
-
-impl FlycheckConfig {
-    pub(crate) fn invocation_strategy(&self) -> InvocationStrategy {
-        match self {
-            FlycheckConfig::CargoCommand { .. } => InvocationStrategy::PerWorkspace,
-            FlycheckConfig::CustomCommand { invocation_strategy, .. } => {
-                invocation_strategy.clone()
-            }
-        }
-    }
+    CustomCommand { command: String, args: Vec<String> },
 }
 
 impl fmt::Display for FlycheckConfig {
@@ -662,13 +644,10 @@ impl FlycheckActor {
                 options.apply_on_command(&mut cmd);
                 Some(cmd)
             }
-            FlycheckConfig::CustomCommand { command, args, invocation_strategy } => {
-                let root = match invocation_strategy {
-                    InvocationStrategy::Once => &*self.root,
-                    InvocationStrategy::PerWorkspace => {
-                        // FIXME: &affected_workspace
-                        &*self.root
-                    }
+            FlycheckConfig::CustomCommand { command, args } => {
+                let root = {
+                    // FIXME: &affected_workspace
+                    &*self.root
                 };
                 let mut cmd = toolchain::command(command, root);
 

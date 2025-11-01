@@ -27,7 +27,7 @@ use proc_macro_api::ProcMacroClient;
 use project_model::{ProjectWorkspace, ProjectWorkspaceKind, WorkspaceBuildScripts};
 use stdx::{format_to, thread::ThreadIntent};
 use triomphe::Arc;
-use vfs::{AbsPath, AbsPathBuf, ChangeKind};
+use vfs::{AbsPath, ChangeKind};
 
 use crate::{
     config::{Config, FilesWatcher, LinkedProject},
@@ -36,7 +36,7 @@ use crate::{
         FetchBuildDataResponse, FetchWorkspaceRequest, FetchWorkspaceResponse, GlobalState,
     },
     lsp_ext,
-    main_loop::{DiscoverProjectParam, Task},
+    main_loop::Task,
     op_queue::Cause,
 };
 use tracing::{debug, info};
@@ -89,40 +89,24 @@ impl GlobalState {
     pub(crate) fn update_configuration(&mut self, config: Config) {
         let _p = tracing::info_span!("GlobalState::update_configuration").entered();
         let old_config = mem::replace(&mut self.config, Arc::new(config));
-        if self.config.lru_parse_query_capacity() != old_config.lru_parse_query_capacity() {
-            self.analysis_host.update_lru_capacity(self.config.lru_parse_query_capacity());
-        }
-        if self.config.lru_query_capacities_config() != old_config.lru_query_capacities_config() {
-            self.analysis_host.update_lru_capacities(
-                &self.config.lru_query_capacities_config().cloned().unwrap_or_default(),
-            );
-        }
 
         if self.config.linked_or_discovered_projects() != old_config.linked_or_discovered_projects()
         {
-            let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
+            let req = FetchWorkspaceRequest { force_crate_graph_reload: false };
             self.fetch_workspaces_queue.request_op("discovered projects changed".to_owned(), req)
         } else if self.config.flycheck() != old_config.flycheck() {
             self.reload_flycheck();
         }
 
-        if self.analysis_host.raw_database().expand_proc_attr_macros()
-            != self.config.expand_proc_attr_macros()
-        {
-            self.analysis_host.raw_database_mut().set_expand_proc_attr_macros_with_durability(
-                self.config.expand_proc_attr_macros(),
-                Durability::HIGH,
-            );
+        if self.analysis_host.raw_database().expand_proc_attr_macros() != true {
+            self.analysis_host
+                .raw_database_mut()
+                .set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
         }
 
         if self.config.cargo() != old_config.cargo() {
-            let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
+            let req = FetchWorkspaceRequest { force_crate_graph_reload: false };
             self.fetch_workspaces_queue.request_op("cargo config changed".to_owned(), req)
-        }
-
-        if self.config.cfg_set_test() != old_config.cfg_set_test() {
-            let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
-            self.fetch_workspaces_queue.request_op("cfg_set_test config changed".to_owned(), req)
         }
     }
 
@@ -134,14 +118,14 @@ impl GlobalState {
         };
         let mut message = String::new();
 
-        if !self.config.cargo_autoreload_config()
-            && self.is_quiescent()
-            && self.fetch_workspaces_queue.op_requested()
-            && self.config.discover_workspace_config().is_none()
-        {
-            status.health |= lsp_ext::Health::Warning;
-            message.push_str("Auto-reloading is disabled and the workspace has changed, a manual workspace reload is required.\n\n");
-        }
+        // if !self.config.cargo_autoreload_config()
+        //     && self.is_quiescent()
+        //     && self.fetch_workspaces_queue.op_requested()
+        //     && self.config.discover_workspace_config().is_none()
+        // {
+        //     status.health |= lsp_ext::Health::Warning;
+        //     message.push_str("Auto-reloading is disabled and the workspace has changed, a manual workspace reload is required.\n\n");
+        // }
 
         if self.build_deps_changed {
             status.health |= lsp_ext::Health::Warning;
@@ -170,17 +154,6 @@ impl GlobalState {
         if self.fetch_workspace_error().is_err() {
             status.health |= lsp_ext::Health::Error;
             message.push_str("Failed to load workspaces.");
-
-            if self.config.has_linked_projects() {
-                message.push_str(
-                    "`rust-analyzer.linkedProjects` have been specified, which may be incorrect. Specified project paths:\n",
-                );
-                message
-                    .push_str(&format!("    {}", self.config.linked_manifests().format("\n    ")));
-                if self.config.has_linked_project_jsons() {
-                    message.push_str("\nAdditionally, one or more project jsons are specified")
-                }
-            }
             message.push_str("\n\n");
         }
 
@@ -270,21 +243,12 @@ impl GlobalState {
         status
     }
 
-    pub(crate) fn fetch_workspaces(
-        &mut self,
-        cause: Cause,
-        path: Option<AbsPathBuf>,
-        force_crate_graph_reload: bool,
-    ) {
+    pub(crate) fn fetch_workspaces(&mut self, cause: Cause, force_crate_graph_reload: bool) {
         info!(%cause, "will fetch workspaces");
 
         self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, {
             let linked_projects = self.config.linked_or_discovered_projects();
             let cargo_config = self.config.cargo();
-            let discover_command = self.config.discover_workspace_config().cloned();
-            let is_quiescent = !(self.discover_workspace_queue.op_in_progress()
-                || self.vfs_progress_config_version < self.vfs_config_version
-                || !self.vfs_done);
 
             move |sender| {
                 let progress = {
@@ -297,22 +261,6 @@ impl GlobalState {
                 };
 
                 sender.send(Task::FetchWorkspace(ProjectWorkspaceProgress::Begin)).unwrap();
-
-                if let (Some(_command), Some(path)) = (&discover_command, &path) {
-                    let build = linked_projects.iter().find_map(|project| match project {
-                        LinkedProject::InlineProjectJson(it) => it.crate_by_buildfile(path),
-                        _ => None,
-                    });
-
-                    if let Some(build) = build
-                        && is_quiescent
-                    {
-                        let path = AbsPathBuf::try_from(build.build_file)
-                            .expect("Unable to convert to an AbsPath");
-                        let arg = DiscoverProjectParam::Buildfile(path);
-                        sender.send(Task::DiscoverLinkedProjects(arg)).unwrap();
-                    }
-                }
 
                 let mut workspaces: Vec<_> = linked_projects
                     .iter()
@@ -395,13 +343,11 @@ impl GlobalState {
         paths: Vec<ProcMacroPaths>,
     ) {
         info!(%cause, "will load proc macros");
-        let ignored_proc_macros = self.config.ignored_proc_macros().clone();
         let proc_macro_clients = self.proc_macro_clients.clone();
 
         self.task_pool.handle.spawn_with_sender(ThreadIntent::Worker, move |sender| {
             sender.send(Task::LoadProcMacros(ProcMacroProgress::Begin)).unwrap();
 
-            let ignored_proc_macros = &ignored_proc_macros;
             let progress = {
                 let sender = sender.clone();
                 &move |msg| {
@@ -415,16 +361,9 @@ impl GlobalState {
                 for (crate_id, res) in paths.iter() {
                     let expansion_res = match client {
                         Some(Ok(client)) => match res {
-                            Ok((crate_name, path)) => {
+                            Ok((_crate_name, path)) => {
                                 progress(format!("loading proc-macros: {path}"));
-                                let ignored_proc_macros = ignored_proc_macros
-                                    .iter()
-                                    .find_map(|(name, macros)| {
-                                        eq_ignore_underscore(name, crate_name).then_some(&**macros)
-                                    })
-                                    .unwrap_or_default();
-
-                                load_proc_macro(client, path, ignored_proc_macros)
+                                load_proc_macro(client, path, &[])
                             }
                             Err(e) => Err(e.clone()),
                         },
@@ -528,16 +467,14 @@ impl GlobalState {
                 );
             });
 
-            if self.config.run_build_scripts() {
-                self.build_deps_changed = false;
-                self.fetch_build_data_queue.request_op("workspace updated".to_owned(), ());
+            self.build_deps_changed = false;
+            self.fetch_build_data_queue.request_op("workspace updated".to_owned(), ());
 
-                if !switching_from_empty_workspace {
-                    // `switch_workspaces()` will be called again when build scripts already run, which should
-                    // take a short time. If we update the workspace now we will invalidate proc macros and cfgs,
-                    // and then when build scripts complete we will invalidate them again.
-                    return;
-                }
+            if !switching_from_empty_workspace {
+                // `switch_workspaces()` will be called again when build scripts already run, which should
+                // take a short time. If we update the workspace now we will invalidate proc macros and cfgs,
+                // and then when build scripts complete we will invalidate them again.
+                return;
             }
         }
 
@@ -620,18 +557,13 @@ impl GlobalState {
         let files_config = self.config.files();
         let project_folders = ProjectFolders::new(&self.workspaces);
 
-        if (self.proc_macro_clients.len() < self.workspaces.len() || !same_workspaces)
-            && self.config.expand_proc_macros()
-        {
+        if self.proc_macro_clients.len() < self.workspaces.len() || !same_workspaces {
             info!("Spawning proc-macro servers");
 
             self.proc_macro_clients = Arc::from_iter(self.workspaces.iter().map(|ws| {
-                let path = match self.config.proc_macro_srv() {
-                    Some(path) => path,
-                    None => match ws.find_sysroot_proc_macro_srv()? {
-                        Ok(path) => path,
-                        Err(e) => return Some(Err(e)),
-                    },
+                let path = match ws.find_sysroot_proc_macro_srv()? {
+                    Ok(path) => path,
+                    Err(e) => return Some(Err(e)),
                 };
 
                 let env: FxHashMap<_, _> = match &ws.kind {
@@ -718,22 +650,13 @@ impl GlobalState {
             ws_to_crate_graph(&self.workspaces, load)
         };
         let mut change = ChangeWithProcMacros::default();
-        if initial_build || !self.config.expand_proc_macros() {
-            if self.config.expand_proc_macros() {
-                change.set_proc_macros(
-                    crate_graph
-                        .iter()
-                        .map(|id| (id, Err(ProcMacroLoadingError::NotYetBuilt)))
-                        .collect(),
-                );
-            } else {
-                change.set_proc_macros(
-                    crate_graph
-                        .iter()
-                        .map(|id| (id, Err(ProcMacroLoadingError::Disabled)))
-                        .collect(),
-                );
-            }
+        if initial_build {
+            change.set_proc_macros(
+                crate_graph
+                    .iter()
+                    .map(|id| (id, Err(ProcMacroLoadingError::NotYetBuilt)))
+                    .collect(),
+            );
 
             change.set_crate_graph(crate_graph);
             self.analysis_host.apply_change(change);
@@ -767,7 +690,7 @@ impl GlobalState {
             return Ok(());
         };
 
-        if workspaces.is_empty() && self.config.discover_workspace_config().is_none() {
+        if workspaces.is_empty() {
             stdx::format_to!(buf, "rust-analyzer failed to fetch workspace");
         } else {
             for ws in workspaces {
@@ -812,65 +735,47 @@ impl GlobalState {
         let _p = tracing::info_span!("GlobalState::reload_flycheck").entered();
         let config = self.config.flycheck();
         let sender = &self.flycheck_sender;
-        let invocation_strategy = config.invocation_strategy();
         let next_gen =
             self.flycheck.iter().map(FlycheckHandle::generation).max().unwrap_or_default() + 1;
 
-        self.flycheck = match invocation_strategy {
-            crate::flycheck::InvocationStrategy::Once => {
-                vec![FlycheckHandle::spawn(
-                    0,
+        self.flycheck = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter_map(|(id, ws)| {
+                Some((
+                    id,
+                    match &ws.kind {
+                        ProjectWorkspaceKind::Cargo { cargo, .. }
+                        | ProjectWorkspaceKind::DetachedFile {
+                            cargo: Some((cargo, _, _)), ..
+                        } => (cargo.workspace_root(), Some(cargo.manifest_path())),
+                        ProjectWorkspaceKind::Json(project) => {
+                            // Enable flychecks for json projects if a custom flycheck command was supplied
+                            // in the workspace configuration.
+                            match config {
+                                FlycheckConfig::CustomCommand { .. } => (project.path(), None),
+                                _ => return None,
+                            }
+                        }
+                        ProjectWorkspaceKind::DetachedFile { .. } => return None,
+                    },
+                    ws.sysroot.root().map(ToOwned::to_owned),
+                ))
+            })
+            .map(|(id, (root, manifest_path), sysroot_root)| {
+                FlycheckHandle::spawn(
+                    id,
                     next_gen,
                     sender.clone(),
-                    config,
-                    None,
-                    self.config.root_path().clone(),
-                    None,
-                )]
-            }
-            crate::flycheck::InvocationStrategy::PerWorkspace => {
-                self.workspaces
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(id, ws)| {
-                        Some((
-                            id,
-                            match &ws.kind {
-                                ProjectWorkspaceKind::Cargo { cargo, .. }
-                                | ProjectWorkspaceKind::DetachedFile {
-                                    cargo: Some((cargo, _, _)),
-                                    ..
-                                } => (cargo.workspace_root(), Some(cargo.manifest_path())),
-                                ProjectWorkspaceKind::Json(project) => {
-                                    // Enable flychecks for json projects if a custom flycheck command was supplied
-                                    // in the workspace configuration.
-                                    match config {
-                                        FlycheckConfig::CustomCommand { .. } => {
-                                            (project.path(), None)
-                                        }
-                                        _ => return None,
-                                    }
-                                }
-                                ProjectWorkspaceKind::DetachedFile { .. } => return None,
-                            },
-                            ws.sysroot.root().map(ToOwned::to_owned),
-                        ))
-                    })
-                    .map(|(id, (root, manifest_path), sysroot_root)| {
-                        FlycheckHandle::spawn(
-                            id,
-                            next_gen,
-                            sender.clone(),
-                            config.clone(),
-                            sysroot_root,
-                            root.to_path_buf(),
-                            manifest_path.map(|it| it.to_path_buf()),
-                        )
-                    })
-                    .collect()
-            }
-        }
-        .into();
+                    config.clone(),
+                    sysroot_root,
+                    root.to_path_buf(),
+                    manifest_path.map(|it| it.to_path_buf()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
     }
 }
 
@@ -893,11 +798,7 @@ pub fn ws_to_crate_graph(
     (crate_graph, proc_macro_paths)
 }
 
-pub(crate) fn should_refresh_for_change(
-    path: &AbsPath,
-    change_kind: ChangeKind,
-    additional_paths: &[&str],
-) -> bool {
+pub(crate) fn should_refresh_for_change(path: &AbsPath, change_kind: ChangeKind) -> bool {
     const IMPLICIT_TARGET_FILES: &[&str] = &["build.rs", "src/main.rs", "src/lib.rs"];
     const IMPLICIT_TARGET_DIRS: &[&str] = &["src/bin", "examples", "tests", "benches"];
 
@@ -907,10 +808,6 @@ pub(crate) fn should_refresh_for_change(
     };
 
     if let "Cargo.toml" | "Cargo.lock" = file_name {
-        return true;
-    }
-
-    if additional_paths.contains(&file_name) {
         return true;
     }
 
@@ -945,19 +842,4 @@ pub(crate) fn should_refresh_for_change(
         }
     }
     false
-}
-
-/// Similar to [`str::eq_ignore_ascii_case`] but instead of ignoring
-/// case, we say that `-` and `_` are equal.
-fn eq_ignore_underscore(s1: &str, s2: &str) -> bool {
-    if s1.len() != s2.len() {
-        return false;
-    }
-
-    s1.as_bytes().iter().zip(s2.as_bytes()).all(|(c1, c2)| {
-        let c1_underscore = c1 == &b'_' || c1 == &b'-';
-        let c2_underscore = c2 == &b'_' || c2 == &b'-';
-
-        c1 == c2 || (c1_underscore && c2_underscore)
-    })
 }

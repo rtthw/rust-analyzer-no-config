@@ -24,7 +24,6 @@ pub mod cli;
 
 mod command;
 mod diagnostics;
-mod discover;
 mod flycheck;
 mod line_index;
 mod main_loop;

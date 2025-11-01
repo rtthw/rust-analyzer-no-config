@@ -60,7 +60,7 @@ pub(crate) fn handle_workspace_reload(state: &mut GlobalState, _: ()) -> anyhow:
     state.proc_macro_clients = Arc::from_iter([]);
     state.build_deps_changed = false;
 
-    let req = FetchWorkspaceRequest { path: None, force_crate_graph_reload: false };
+    let req = FetchWorkspaceRequest { force_crate_graph_reload: false };
     state.fetch_workspaces_queue.request_op("reload workspace request".to_owned(), req);
     Ok(())
 }
@@ -1362,8 +1362,8 @@ pub(crate) fn handle_references(
     let _p = tracing::info_span!("handle_references").entered();
     let position = from_proto::file_position(&snap, params.text_document_position)?;
 
-    let exclude_imports = snap.config.find_all_refs_exclude_imports();
-    let exclude_tests = snap.config.find_all_refs_exclude_tests();
+    let exclude_imports = false;
+    let exclude_tests = false;
 
     let Some(refs) = snap.analysis.find_all_refs(
         position,
@@ -1927,7 +1927,7 @@ pub(crate) fn handle_semantic_tokens_full(
         &line_index,
         highlights,
         snap.config.semantics_tokens_augments_syntax_tokens(),
-        snap.config.highlighting_non_standard_tokens(),
+        true,
     );
 
     // Unconditionally cache the tokens
@@ -1957,7 +1957,7 @@ pub(crate) fn handle_semantic_tokens_full_delta(
         &line_index,
         highlights,
         snap.config.semantics_tokens_augments_syntax_tokens(),
-        snap.config.highlighting_non_standard_tokens(),
+        true,
     );
 
     let cached_tokens = snap.semantic_tokens_cache.lock().remove(&params.text_document.uri);
@@ -1999,7 +1999,7 @@ pub(crate) fn handle_semantic_tokens_range(
         &line_index,
         highlights,
         snap.config.semantics_tokens_augments_syntax_tokens(),
-        snap.config.highlighting_non_standard_tokens(),
+        true,
     );
     Ok(Some(semantic_tokens.into()))
 }
@@ -2521,7 +2521,7 @@ pub(crate) fn internal_testing_fetch_config(
             )
         }
         InternalTestingFetchConfigOption::CheckWorkspace => {
-            InternalTestingFetchConfigResponse::CheckWorkspace(state.config.flycheck_workspace())
+            InternalTestingFetchConfigResponse::CheckWorkspace(true)
         }
     }))
 }

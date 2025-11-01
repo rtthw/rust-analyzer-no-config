@@ -28,12 +28,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use stdx::thread;
 use tracing::{Level, span, trace};
 use triomphe::Arc;
-use vfs::{AbsPathBuf, AnchoredPathBuf, Vfs, VfsPath};
+use vfs::{AnchoredPathBuf, Vfs, VfsPath};
 
 use crate::{
     config::Config,
     diagnostics::{CheckFixes, DiagnosticCollection},
-    discover,
     flycheck::{FlycheckHandle, FlycheckMessage},
     line_index::{LineEndings, LineIndex},
     lsp::{from_proto, to_proto::url_from_abs_path},
@@ -49,7 +48,6 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct FetchWorkspaceRequest {
-    pub(crate) path: Option<AbsPathBuf>,
     pub(crate) force_crate_graph_reload: bool,
 }
 
@@ -114,11 +112,6 @@ pub(crate) struct GlobalState {
     pub(crate) test_run_sender: Sender<CargoTestMessage>,
     pub(crate) test_run_receiver: Receiver<CargoTestMessage>,
     pub(crate) test_run_remaining_jobs: usize,
-
-    // Project loading
-    pub(crate) discover_handle: Option<discover::DiscoverHandle>,
-    pub(crate) discover_sender: Sender<discover::DiscoverProjectMessage>,
-    pub(crate) discover_receiver: Receiver<discover::DiscoverProjectMessage>,
 
     // Debouncing channel for fetching the workspace
     // we want to delay it until the VFS looks stable-ish (and thus is not currently in the middle
@@ -241,14 +234,9 @@ impl GlobalState {
             TaskQueue { sender, receiver }
         };
 
-        let mut analysis_host = AnalysisHost::new(config.lru_parse_query_capacity());
-        if let Some(capacities) = config.lru_query_capacities_config() {
-            analysis_host.update_lru_capacities(capacities);
-        }
+        let analysis_host = AnalysisHost::new(None);
         let (flycheck_sender, flycheck_receiver) = unbounded();
         let (test_run_sender, test_run_receiver) = unbounded();
-
-        let (discover_sender, discover_receiver) = unbounded();
 
         let mut this = GlobalState {
             sender,
@@ -283,10 +271,6 @@ impl GlobalState {
             test_run_sender,
             test_run_receiver,
             test_run_remaining_jobs: 0,
-
-            discover_handle: None,
-            discover_sender,
-            discover_receiver,
 
             fetch_ws_receiver: None,
 
@@ -355,23 +339,11 @@ impl GlobalState {
                             modified_rust_files.push(file.file_id);
                         }
 
-                        let additional_files = self
-                            .config
-                            .discover_workspace_config()
-                            .map(|cfg| {
-                                cfg.files_to_watch.iter().map(String::as_str).collect::<Vec<&str>>()
-                            })
-                            .unwrap_or_default();
-
                         let path = path.to_path_buf();
                         if file.is_created_or_deleted() {
                             workspace_structure_change.get_or_insert((path, false)).1 |=
                                 self.crate_graph_file_dependencies.contains(vfs_path);
-                        } else if reload::should_refresh_for_change(
-                            &path,
-                            file.kind(),
-                            &additional_files,
-                        ) {
+                        } else if reload::should_refresh_for_change(&path, file.kind()) {
                             trace!(?path, kind = ?file.kind(), "refreshing for a change");
                             workspace_structure_change.get_or_insert((path.clone(), false));
                         }
@@ -436,7 +408,7 @@ impl GlobalState {
             if let Some((path, force_crate_graph_reload)) = workspace_structure_change {
                 let _p = span!(Level::INFO, "GlobalState::process_changes/ws_structure_change")
                     .entered();
-                self.enqueue_workspace_fetch(path, force_crate_graph_reload);
+                self.enqueue_workspace_fetch(force_crate_graph_reload);
             }
         }
 
@@ -453,8 +425,7 @@ impl GlobalState {
             check_fixes: Arc::clone(&self.diagnostics.check_fixes),
             mem_docs: self.mem_docs.clone(),
             semantic_tokens_cache: Arc::clone(&self.semantic_tokens_cache),
-            proc_macros_loaded: !self.config.expand_proc_macros()
-                || self.fetch_proc_macros_queue.last_op_result().copied().unwrap_or(false),
+            proc_macros_loaded: false,
             flycheck: self.flycheck.clone(),
         }
     }
@@ -586,7 +557,7 @@ impl GlobalState {
         })
     }
 
-    fn enqueue_workspace_fetch(&mut self, path: AbsPathBuf, force_crate_graph_reload: bool) {
+    fn enqueue_workspace_fetch(&mut self, force_crate_graph_reload: bool) {
         let already_requested = self.fetch_workspaces_queue.op_requested()
             && !self.fetch_workspaces_queue.op_in_progress();
         if self.fetch_ws_receiver.is_none() && already_requested {
@@ -600,7 +571,7 @@ impl GlobalState {
 
         self.fetch_ws_receiver = Some((
             crossbeam_channel::after(Duration::from_millis(100)),
-            FetchWorkspaceRequest { path: Some(path), force_crate_graph_reload },
+            FetchWorkspaceRequest { force_crate_graph_reload },
         ));
     }
 

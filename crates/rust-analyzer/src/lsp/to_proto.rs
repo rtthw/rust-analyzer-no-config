@@ -250,12 +250,8 @@ pub(crate) fn completion_items(
     version: Option<i32>,
     tdpp: lsp_types::TextDocumentPositionParams,
     completion_trigger_character: Option<char>,
-    mut items: Vec<CompletionItem>,
+    items: Vec<CompletionItem>,
 ) -> Vec<lsp_types::CompletionItem> {
-    if config.completion_hide_deprecated() {
-        items.retain(|item| !item.deprecated);
-    }
-
     let max_relevance = items.iter().map(|it| it.relevance.score()).max().unwrap_or_default();
     let mut res = Vec::with_capacity(items.len());
     let client_commands = config.client_commands();
