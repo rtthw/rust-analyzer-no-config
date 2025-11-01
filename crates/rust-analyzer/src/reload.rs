@@ -566,49 +566,43 @@ impl GlobalState {
                 .filter(|it| it.is_local)
                 .map(|it| it.include);
 
-            let mut watchers: Vec<FileSystemWatcher> =
-                if self.config.did_change_watched_files_relative_pattern_support() {
-                    // When relative patterns are supported by the client, prefer using them
-                    filter
-                        .flat_map(|include| {
-                            include.into_iter().flat_map(|base| {
-                                [
-                                    (base.clone(), "**/*.rs"),
-                                    (base.clone(), "**/Cargo.{lock,toml}"),
-                                    (base, "**/rust-analyzer.toml"),
-                                ]
-                            })
+            let mut watchers: Vec<FileSystemWatcher> = if self
+                .config
+                .did_change_watched_files_relative_pattern_support()
+            {
+                // When relative patterns are supported by the client, prefer using them
+                filter
+                    .flat_map(|include| {
+                        include.into_iter().flat_map(|base| {
+                            [(base.clone(), "**/*.rs"), (base.clone(), "**/Cargo.{lock,toml}")]
                         })
-                        .map(|(base, pat)| lsp_types::FileSystemWatcher {
-                            glob_pattern: lsp_types::GlobPattern::Relative(
-                                lsp_types::RelativePattern {
-                                    base_uri: lsp_types::OneOf::Right(
-                                        lsp_types::Url::from_file_path(base).unwrap(),
-                                    ),
-                                    pattern: pat.to_owned(),
-                                },
-                            ),
-                            kind: None,
+                    })
+                    .map(|(base, pat)| lsp_types::FileSystemWatcher {
+                        glob_pattern: lsp_types::GlobPattern::Relative(
+                            lsp_types::RelativePattern {
+                                base_uri: lsp_types::OneOf::Right(
+                                    lsp_types::Url::from_file_path(base).unwrap(),
+                                ),
+                                pattern: pat.to_owned(),
+                            },
+                        ),
+                        kind: None,
+                    })
+                    .collect()
+            } else {
+                // When they're not, integrate the base to make them into absolute patterns
+                filter
+                    .flat_map(|include| {
+                        include.into_iter().flat_map(|base| {
+                            [format!("{base}/**/*.rs"), format!("{base}/**/Cargo.{{toml,lock}}")]
                         })
-                        .collect()
-                } else {
-                    // When they're not, integrate the base to make them into absolute patterns
-                    filter
-                        .flat_map(|include| {
-                            include.into_iter().flat_map(|base| {
-                                [
-                                    format!("{base}/**/*.rs"),
-                                    format!("{base}/**/Cargo.{{toml,lock}}"),
-                                    format!("{base}/**/rust-analyzer.toml"),
-                                ]
-                            })
-                        })
-                        .map(|glob_pattern| lsp_types::FileSystemWatcher {
-                            glob_pattern: lsp_types::GlobPattern::String(glob_pattern),
-                            kind: None,
-                        })
-                        .collect()
-                };
+                    })
+                    .map(|glob_pattern| lsp_types::FileSystemWatcher {
+                        glob_pattern: lsp_types::GlobPattern::String(glob_pattern),
+                        kind: None,
+                    })
+                    .collect()
+            };
 
             // Also explicitly watch any build files configured in JSON project files.
             for ws in self.workspaces.iter() {

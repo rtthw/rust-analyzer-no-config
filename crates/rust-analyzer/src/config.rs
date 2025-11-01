@@ -28,7 +28,6 @@ use project_model::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use stdx::format_to_acc;
 use triomphe::Arc;
 use vfs::{AbsPath, AbsPathBuf};
 
@@ -964,9 +963,6 @@ pub struct Config {
     client_info: Option<ClientInfo>,
 
     default_config: &'static DefaultConfigData,
-    /// Config node that obtains its initial value during the server initialization and
-    /// by receiving a `lsp_types::notification::DidChangeConfiguration`.
-    client_config: FullConfigInput,
 
     /// Clone of the value that is stored inside a `GlobalState`.
     source_root_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
@@ -984,7 +980,6 @@ impl fmt::Debug for Config {
             .field("root_path", &self.root_path)
             .field("snippets", &self.snippets)
             .field("client_info", &self.client_info)
-            .field("client_config", &self.client_config)
             .field("source_root_parent_map", &self.source_root_parent_map)
             .field("detached_files", &self.detached_files)
             .finish()
@@ -1032,18 +1027,10 @@ impl Config {
 
                 patch_old_style::patch_json_for_outdated_configs(&mut json);
 
-                let mut json_errors = vec![];
-
-                let input = FullConfigInput::from_json(json, &mut json_errors);
-
                 // IMPORTANT : This holds as long as ` completion_snippets_custom` is declared `client`.
                 config.snippets.clear();
 
-                let snips = input
-                    .global
-                    .completion_snippets_custom
-                    .as_ref()
-                    .unwrap_or(&self.default_config.global.completion_snippets_custom);
+                let snips = &self.default_config.global.completion_snippets_custom;
                 #[allow(dead_code)]
                 let _ = Self::completion_snippets_custom;
                 for (name, def) in snips.iter() {
@@ -1064,16 +1051,10 @@ impl Config {
                         scope,
                     ) {
                         Some(snippet) => config.snippets.push(snippet),
-                        None => json_errors.push((
-                            name.to_owned(),
-                            <serde_json::Error as serde::de::Error>::custom(format!(
-                                "snippet {name} is invalid or triggers are missing",
-                            )),
-                        )),
+                        None => unreachable!("default snippets are valid"),
                     }
                 }
 
-                config.client_config = input;
                 config.detached_files = detached_files;
             }
             should_update = true;
@@ -1354,7 +1335,6 @@ impl Config {
                 name: it.name,
                 version: it.version.as_deref().map(Version::parse).and_then(Result::ok),
             }),
-            client_config: FullConfigInput::default(),
             default_config: DEFAULT_CONFIG_DATA.get_or_init(|| Box::leak(Box::default())),
             source_root_parent_map: Arc::new(FxHashMap::default()),
             detached_files: Default::default(),
@@ -1378,22 +1358,6 @@ impl Config {
 
     pub fn add_workspaces(&mut self, paths: impl Iterator<Item = AbsPathBuf>) {
         self.workspace_roots.extend(paths);
-    }
-
-    pub fn json_schema() -> serde_json::Value {
-        let mut s = FullConfigInput::json_schema();
-
-        fn sort_objects_by_field(json: &mut serde_json::Value) {
-            if let serde_json::Value::Object(object) = json {
-                let old = std::mem::take(object);
-                old.into_iter().sorted_by(|(k, _), (k2, _)| k.cmp(k2)).for_each(|(k, mut v)| {
-                    sort_objects_by_field(&mut v);
-                    object.insert(k, v);
-                });
-            }
-        }
-        sort_objects_by_field(&mut s);
-        s
     }
 
     pub fn root_path(&self) -> &AbsPathBuf {
@@ -2684,10 +2648,6 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.local.$field.as_ref() {
-                        return &v;
-                    }
-
                     &self.default_config.local.$field
                 }
             )*
@@ -2703,10 +2663,6 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.workspace.$field.as_ref() {
-                        return &v;
-                    }
-
                     &self.default_config.workspace.$field
                 }
             )*
@@ -2722,10 +2678,6 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.global.$field.as_ref() {
-                        return &v;
-                    }
-
                     &self.default_config.global.$field
                 }
             )*
@@ -2741,10 +2693,6 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.client.$field.as_ref() {
-                        return &v;
-                    }
-
                     &self.default_config.client.$field
                 }
             )*
@@ -2857,64 +2805,6 @@ struct DefaultConfigData {
     client: ClientDefaultConfigData,
 }
 
-/// All of the config levels, all fields `Option<T>`, to describe fields that are actually set by
-/// some rust-analyzer.toml file or JSON blob. An empty rust-analyzer.toml corresponds to
-/// all fields being None.
-#[derive(Debug, Clone, Default)]
-struct FullConfigInput {
-    global: GlobalConfigInput,
-    workspace: WorkspaceConfigInput,
-    local: LocalConfigInput,
-    client: ClientConfigInput,
-}
-
-impl FullConfigInput {
-    fn from_json(
-        mut json: serde_json::Value,
-        error_sink: &mut Vec<(String, serde_json::Error)>,
-    ) -> FullConfigInput {
-        FullConfigInput {
-            global: GlobalConfigInput::from_json(&mut json, error_sink),
-            local: LocalConfigInput::from_json(&mut json, error_sink),
-            client: ClientConfigInput::from_json(&mut json, error_sink),
-            workspace: WorkspaceConfigInput::from_json(&mut json, error_sink),
-        }
-    }
-
-    fn schema_fields() -> Vec<SchemaField> {
-        let mut fields = Vec::new();
-        GlobalConfigInput::schema_fields(&mut fields);
-        LocalConfigInput::schema_fields(&mut fields);
-        ClientConfigInput::schema_fields(&mut fields);
-        WorkspaceConfigInput::schema_fields(&mut fields);
-        fields.sort_by_key(|&(x, ..)| x);
-        fields
-            .iter()
-            .tuple_windows()
-            .for_each(|(a, b)| assert!(a.0 != b.0, "{a:?} duplicate field"));
-        fields
-    }
-
-    fn json_schema() -> serde_json::Value {
-        schema(&Self::schema_fields())
-    }
-
-    #[cfg(test)]
-    fn manual() -> String {
-        manual(&Self::schema_fields())
-    }
-}
-
-/// Workspace and local config levels, all fields `Option<T>`, to describe fields that are actually set by
-/// some rust-analyzer.toml file or JSON blob. An empty rust-analyzer.toml corresponds to
-/// all fields being None.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-struct WorkspaceLocalConfigInput {
-    workspace: WorkspaceConfigInput,
-    local: LocalConfigInput,
-}
-
 fn get_field_json<T: DeserializeOwned>(
     json: &mut serde_json::Value,
     error_sink: &mut Vec<(String, serde_json::Error)>,
@@ -2999,601 +2889,11 @@ fn toml_pointer<'a>(toml: &'a toml::Table, pointer: &str) -> Option<&'a toml::Va
 
 type SchemaField = (&'static str, &'static str, &'static [&'static str], String);
 
-fn schema(fields: &[SchemaField]) -> serde_json::Value {
-    let map = fields
-        .iter()
-        .map(|(field, ty, doc, default)| {
-            let name = field.replace('_', ".");
-            let category = name
-                .split_once(".")
-                .map(|(category, _name)| to_title_case(category))
-                .unwrap_or("rust-analyzer".into());
-            let name = format!("rust-analyzer.{name}");
-            let props = field_props(field, ty, doc, default);
-            serde_json::json!({
-                "title": category,
-                "properties": {
-                    name: props
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    map.into()
-}
-
-/// Translate a field name to a title case string suitable for use in the category names on the
-/// vscode settings page.
-///
-/// First letter of word should be uppercase, if an uppercase letter is encountered, add a space
-/// before it e.g. "fooBar" -> "Foo Bar", "fooBarBaz" -> "Foo Bar Baz", "foo" -> "Foo"
-///
-/// This likely should be in stdx (or just use heck instead), but it doesn't handle any edge cases
-/// and is intentionally simple.
-fn to_title_case(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    if let Some(first) = chars.next() {
-        result.push(first.to_ascii_uppercase());
-        for c in chars {
-            if c.is_uppercase() {
-                result.push(' ');
-            }
-            result.push(c);
-        }
-    }
-    result
-}
-
-fn field_props(field: &str, ty: &str, doc: &[&str], default: &str) -> serde_json::Value {
-    let doc = doc_comment_to_string(doc);
-    let doc = doc.trim_end_matches('\n');
-    assert!(
-        doc.ends_with('.') && doc.starts_with(char::is_uppercase),
-        "bad docs for {field}: {doc:?}"
-    );
-    let default = default.parse::<serde_json::Value>().unwrap();
-
-    let mut map = serde_json::Map::default();
-    macro_rules! set {
-        ($($key:literal: $value:tt),*$(,)?) => {{$(
-            map.insert($key.into(), serde_json::json!($value));
-        )*}};
-    }
-    set!("markdownDescription": doc);
-    set!("default": default);
-
-    match ty {
-        "bool" => set!("type": "boolean"),
-        "usize" => set!("type": "integer", "minimum": 0),
-        "String" => set!("type": "string"),
-        "Vec<String>" => set! {
-            "type": "array",
-            "items": { "type": "string" },
-        },
-        "Vec<Utf8PathBuf>" => set! {
-            "type": "array",
-            "items": { "type": "string" },
-        },
-        "FxHashSet<String>" => set! {
-            "type": "array",
-            "items": { "type": "string" },
-            "uniqueItems": true,
-        },
-        "FxHashMap<Box<str>, Box<[Box<str>]>>" => set! {
-            "type": "object",
-        },
-        "FxIndexMap<String, SnippetDef>" => set! {
-            "type": "object",
-        },
-        "FxHashMap<String, String>" => set! {
-            "type": "object",
-        },
-        "FxHashMap<Box<str>, u16>" => set! {
-            "type": "object",
-        },
-        "FxHashMap<String, Option<String>>" => set! {
-            "type": "object",
-        },
-        "Option<usize>" => set! {
-            "type": ["null", "integer"],
-            "minimum": 0,
-        },
-        "Option<u16>" => set! {
-            "type": ["null", "integer"],
-            "minimum": 0,
-            "maximum": 65535,
-        },
-        "Option<String>" => set! {
-            "type": ["null", "string"],
-        },
-        "Option<Utf8PathBuf>" => set! {
-            "type": ["null", "string"],
-        },
-        "Option<bool>" => set! {
-            "type": ["null", "boolean"],
-        },
-        "Option<Vec<String>>" => set! {
-            "type": ["null", "array"],
-            "items": { "type": "string" },
-        },
-        "ExprFillDefaultDef" => set! {
-            "type": "string",
-            "enum": ["todo", "default"],
-            "enumDescriptions": [
-                "Fill missing expressions with the `todo` macro",
-                "Fill missing expressions with reasonable defaults, `new` or `default` constructors."
-            ],
-        },
-        "ImportGranularityDef" => set! {
-            "type": "string",
-            "anyOf": [
-                {
-                    "enum": ["crate", "module", "item", "one"],
-                    "enumDescriptions": [
-                        "Merge imports from the same crate into a single use statement. Conversely, imports from different crates are split into separate statements.",
-                        "Merge imports from the same module into a single use statement. Conversely, imports from different modules are split into separate statements.",
-                        "Flatten imports so that each has its own use statement.",
-                        "Merge all imports into a single use statement as long as they have the same visibility and attributes."
-                    ],
-                },
-                {
-                    "enum": ["preserve"],
-                    "enumDescriptions": [
-                        "Deprecated - unless `enforceGranularity` is `true`, the style of the current file is preferred over this setting. Behaves like `item`.",
-                    ],
-                    "deprecated": true,
-                }
-            ],
-        },
-        "ImportPrefixDef" => set! {
-            "type": "string",
-            "enum": [
-                "plain",
-                "self",
-                "crate"
-            ],
-            "enumDescriptions": [
-                "Insert import paths relative to the current module, using up to one `super` prefix if the parent module contains the requested item.",
-                "Insert import paths relative to the current module, using up to one `super` prefix if the parent module contains the requested item. Prefixes `self` in front of the path if it starts with a module.",
-                "Force import paths to be absolute by always starting them with `crate` or the extern crate name they come from."
-            ],
-        },
-        "Vec<ManifestOrProjectJson>" => set! {
-            "type": "array",
-            "items": { "type": ["string", "object"] },
-        },
-        "WorkspaceSymbolSearchScopeDef" => set! {
-            "type": "string",
-            "enum": ["workspace", "workspace_and_dependencies"],
-            "enumDescriptions": [
-                "Search in current workspace only.",
-                "Search in current workspace and dependencies."
-            ],
-        },
-        "WorkspaceSymbolSearchKindDef" => set! {
-            "type": "string",
-            "enum": ["only_types", "all_symbols"],
-            "enumDescriptions": [
-                "Search for types only.",
-                "Search for all symbols kinds."
-            ],
-        },
-        "LifetimeElisionDef" => set! {
-            "type": "string",
-            "enum": [
-                "always",
-                "never",
-                "skip_trivial"
-            ],
-            "enumDescriptions": [
-                "Always show lifetime elision hints.",
-                "Never show lifetime elision hints.",
-                "Only show lifetime elision hints if a return type is involved."
-            ]
-        },
-        "ClosureReturnTypeHintsDef" => set! {
-            "type": "string",
-            "enum": [
-                "always",
-                "never",
-                "with_block"
-            ],
-            "enumDescriptions": [
-                "Always show type hints for return types of closures.",
-                "Never show type hints for return types of closures.",
-                "Only show type hints for return types of closures with blocks."
-            ]
-        },
-        "ReborrowHintsDef" => set! {
-            "type": "string",
-            "enum": [
-                "always",
-                "never",
-                "mutable"
-            ],
-            "enumDescriptions": [
-                "Always show reborrow hints.",
-                "Never show reborrow hints.",
-                "Only show mutable reborrow hints."
-            ]
-        },
-        "AdjustmentHintsDef" => set! {
-            "type": "string",
-            "enum": [
-                "always",
-                "never",
-                "reborrow"
-            ],
-            "enumDescriptions": [
-                "Always show all adjustment hints.",
-                "Never show adjustment hints.",
-                "Only show auto borrow and dereference adjustment hints."
-            ]
-        },
-        "DiscriminantHintsDef" => set! {
-            "type": "string",
-            "enum": [
-                "always",
-                "never",
-                "fieldless"
-            ],
-            "enumDescriptions": [
-                "Always show all discriminant hints.",
-                "Never show discriminant hints.",
-                "Only show discriminant hints on fieldless enum variants."
-            ]
-        },
-        "AdjustmentHintsModeDef" => set! {
-            "type": "string",
-            "enum": [
-                "prefix",
-                "postfix",
-                "prefer_prefix",
-                "prefer_postfix",
-            ],
-            "enumDescriptions": [
-                "Always show adjustment hints as prefix (`*expr`).",
-                "Always show adjustment hints as postfix (`expr.*`).",
-                "Show prefix or postfix depending on which uses less parenthesis, preferring prefix.",
-                "Show prefix or postfix depending on which uses less parenthesis, preferring postfix.",
-            ]
-        },
-        "CargoFeaturesDef" => set! {
-            "anyOf": [
-                {
-                    "type": "string",
-                    "enum": [
-                        "all"
-                    ],
-                    "enumDescriptions": [
-                        "Pass `--all-features` to cargo",
-                    ]
-                },
-                {
-                    "type": "array",
-                    "items": { "type": "string" }
-                }
-            ],
-        },
-        "Option<CargoFeaturesDef>" => set! {
-            "anyOf": [
-                {
-                    "type": "string",
-                    "enum": [
-                        "all"
-                    ],
-                    "enumDescriptions": [
-                        "Pass `--all-features` to cargo",
-                    ]
-                },
-                {
-                    "type": "array",
-                    "items": { "type": "string" }
-                },
-                { "type": "null" }
-            ],
-        },
-        "CallableCompletionDef" => set! {
-            "type": "string",
-            "enum": [
-                "fill_arguments",
-                "add_parentheses",
-                "none",
-            ],
-            "enumDescriptions": [
-                "Add call parentheses and pre-fill arguments.",
-                "Add call parentheses.",
-                "Do no snippet completions for callables."
-            ]
-        },
-        "SignatureDetail" => set! {
-            "type": "string",
-            "enum": ["full", "parameters"],
-            "enumDescriptions": [
-                "Show the entire signature.",
-                "Show only the parameters."
-            ],
-        },
-        "FilesWatcherDef" => set! {
-            "type": "string",
-            "enum": ["client", "server"],
-            "enumDescriptions": [
-                "Use the client (editor) to watch files for changes",
-                "Use server-side file watching",
-            ],
-        },
-        "AnnotationLocation" => set! {
-            "type": "string",
-            "enum": ["above_name", "above_whole_item"],
-            "enumDescriptions": [
-                "Render annotations above the name of the item.",
-                "Render annotations above the whole item, including documentation comments and attributes."
-            ],
-        },
-        "InvocationStrategy" => set! {
-            "type": "string",
-            "enum": ["per_workspace", "once"],
-            "enumDescriptions": [
-                "The command will be executed for each Rust workspace with the workspace as the working directory.",
-                "The command will be executed once with the opened project as the working directory."
-            ],
-        },
-        "Option<CheckOnSaveTargets>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "string",
-                },
-                {
-                    "type": "array",
-                    "items": { "type": "string" }
-                },
-            ],
-        },
-        "ClosureStyle" => set! {
-            "type": "string",
-            "enum": ["impl_fn", "rust_analyzer", "with_id", "hide"],
-            "enumDescriptions": [
-                "`impl_fn`: `impl FnMut(i32, u64) -> i8`",
-                "`rust_analyzer`: `|i32, u64| -> i8`",
-                "`with_id`: `{closure#14352}`, where that id is the unique number of the closure in r-a internals",
-                "`hide`: Shows `...` for every closure type",
-            ],
-        },
-        "Option<MemoryLayoutHoverRenderKindDef>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "string",
-                    "enum": ["both", "decimal", "hexadecimal", ],
-                    "enumDescriptions": [
-                        "Render as 12 (0xC)",
-                        "Render as 12",
-                        "Render as 0xC"
-                    ],
-                },
-            ],
-        },
-        "Option<TargetDirectory>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "boolean"
-                },
-                {
-                    "type": "string"
-                },
-            ],
-        },
-        "NumThreads" => set! {
-            "anyOf": [
-                {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 255
-                },
-                {
-                    "type": "string",
-                    "enum": ["physical", "logical", ],
-                    "enumDescriptions": [
-                        "Use the number of physical cores",
-                        "Use the number of logical cores",
-                    ],
-                },
-            ],
-        },
-        "Option<NumThreads>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 255
-                },
-                {
-                    "type": "string",
-                    "enum": ["physical", "logical", ],
-                    "enumDescriptions": [
-                        "Use the number of physical cores",
-                        "Use the number of logical cores",
-                    ],
-                },
-            ],
-        },
-        "Option<DiscoverWorkspaceConfig>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
-                        "progressLabel": {
-                            "type": "string"
-                        },
-                        "filesToWatch": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
-                    }
-                }
-            ]
-        },
-        "Option<MaxSubstitutionLength>" => set! {
-            "anyOf": [
-                {
-                    "type": "null"
-                },
-                {
-                    "type": "string",
-                    "enum": ["hide"]
-                },
-                {
-                    "type": "integer"
-                }
-            ]
-        },
-        "Vec<AutoImportExclusion>" => set! {
-            "type": "array",
-            "items": {
-                "anyOf": [
-                    {
-                        "type": "string",
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                            },
-                            "type": {
-                                "type": "string",
-                                "enum": ["always", "methods"],
-                                "enumDescriptions": [
-                                    "Do not show this item or its methods (if it is a trait) in auto-import completions.",
-                                    "Do not show this traits methods in auto-import completions."
-                                ],
-                            },
-                        }
-                    }
-                ]
-             }
-        },
-        _ => panic!("missing entry for {ty}: {default} (field {field})"),
-    }
-
-    map.into()
-}
-
-#[cfg(test)]
-fn manual(fields: &[SchemaField]) -> String {
-    fields.iter().fold(String::new(), |mut acc, (field, _ty, doc, default)| {
-        let id = field.replace('_', ".");
-        let name = format!("rust-analyzer.{id}");
-        let doc = doc_comment_to_string(doc);
-        if default.contains('\n') {
-            format_to_acc!(
-                acc,
-                "## {name} {{#{id}}}\n\nDefault:\n```json\n{default}\n```\n\n{doc}\n\n"
-            )
-        } else {
-            format_to_acc!(acc, "## {name} {{#{id}}}\n\nDefault: `{default}`\n\n{doc}\n\n")
-        }
-    })
-}
-
-fn doc_comment_to_string(doc: &[&str]) -> String {
-    doc.iter()
-        .map(|it| it.strip_prefix(' ').unwrap_or(it))
-        .fold(String::new(), |mut acc, it| format_to_acc!(acc, "{it}\n"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use test_utils::{ensure_file_contents, project_root};
+    use test_utils::project_root;
 
     use super::*;
-
-    #[test]
-    fn generate_package_json_config() {
-        let s = Config::json_schema();
-
-        let schema = format!("{s:#}");
-        let mut schema = schema
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .replace("  ", "    ")
-            .replace('\n', "\n        ")
-            .trim_start_matches('\n')
-            .trim_end()
-            .to_owned();
-        schema.push_str(",\n");
-
-        // Transform the asciidoc form link to markdown style.
-        //
-        // https://link[text] => [text](https://link)
-        let url_matches = schema.match_indices("https://");
-        let mut url_offsets = url_matches.map(|(idx, _)| idx).collect::<Vec<usize>>();
-        url_offsets.reverse();
-        for idx in url_offsets {
-            let link = &schema[idx..];
-            // matching on whitespace to ignore normal links
-            if let Some(link_end) = link.find([' ', '['])
-                && link.chars().nth(link_end) == Some('[')
-                && let Some(link_text_end) = link.find(']')
-            {
-                let link_text = link[link_end..(link_text_end + 1)].to_string();
-
-                schema.replace_range((idx + link_end)..(idx + link_text_end + 1), "");
-                schema.insert(idx, '(');
-                schema.insert(idx + link_end + 1, ')');
-                schema.insert_str(idx, &link_text);
-            }
-        }
-
-        let package_json_path = project_root().join("editors/code/package.json");
-        let mut package_json = fs::read_to_string(&package_json_path).unwrap();
-
-        let start_marker =
-            "            {\n                \"title\": \"$generated-start\"\n            },\n";
-        let end_marker =
-            "            {\n                \"title\": \"$generated-end\"\n            }\n";
-
-        let start = package_json.find(start_marker).unwrap() + start_marker.len();
-        let end = package_json.find(end_marker).unwrap();
-
-        let p = remove_ws(&package_json[start..end]);
-        let s = remove_ws(&schema);
-        if !p.contains(&s) {
-            package_json.replace_range(start..end, &schema);
-            ensure_file_contents(package_json_path.as_std_path(), &package_json)
-        }
-    }
-
-    #[test]
-    fn generate_config_documentation() {
-        let docs_path = project_root().join("docs/book/src/configuration_generated.md");
-        let expected = FullConfigInput::manual();
-        ensure_file_contents(docs_path.as_std_path(), &expected);
-    }
-
-    fn remove_ws(text: &str) -> String {
-        text.replace(char::is_whitespace, "")
-    }
 
     #[test]
     fn proc_macro_srv_null() {

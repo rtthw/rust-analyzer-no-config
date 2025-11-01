@@ -31,9 +31,6 @@ xflags::xflags! {
         default cmd lsp-server {
             /// Print version.
             optional -V, --version
-
-            /// Dump a LSP config JSON schema.
-            optional --print-config-schema
         }
 
         /// Parse stdin.
@@ -225,7 +222,6 @@ pub enum RustAnalyzerCmd {
 #[derive(Debug)]
 pub struct LspServer {
     pub version: bool,
-    pub print_config_schema: bool,
 }
 
 #[derive(Debug)]

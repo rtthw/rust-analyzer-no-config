@@ -55,10 +55,6 @@ fn actual_main() -> anyhow::Result<ExitCode> {
 
     match flags.subcommand {
         flags::RustAnalyzerCmd::LspServer(cmd) => 'lsp_server: {
-            if cmd.print_config_schema {
-                println!("{:#}", Config::json_schema());
-                break 'lsp_server;
-            }
             if cmd.version {
                 println!("rust-analyzer {}", rust_analyzer::version());
                 break 'lsp_server;
