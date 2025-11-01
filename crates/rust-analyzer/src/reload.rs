@@ -156,10 +156,6 @@ impl GlobalState {
                 "Please refer to the language server logs for more details on the errors.",
             );
         }
-        if let Some(err) = &self.config_errors {
-            status.health |= lsp_ext::Health::Warning;
-            format_to!(message, "{err}\n");
-        }
         if let Some(err) = &self.last_flycheck_error {
             status.health |= lsp_ext::Health::Warning;
             message.push_str(err);

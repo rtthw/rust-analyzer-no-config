@@ -11,7 +11,6 @@ use ide_db::LineIndexDatabase;
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
 use rustc_hash::{FxHashMap, FxHashSet};
 use scip::types::{self as scip_types, SymbolInformation};
-use tracing::error;
 use vfs::FileId;
 
 use crate::{
@@ -42,11 +41,7 @@ impl flags::Scip {
             let mut change = ConfigChange::default();
             change.change_client_config(json);
 
-            let error_sink;
-            (config, error_sink, _) = config.apply_change(change);
-
-            // FIXME @alibektas : What happens to errors without logging?
-            error!(?error_sink, "Config Error(s)");
+            (config, _) = config.apply_change(change);
         }
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: true,

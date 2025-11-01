@@ -4,7 +4,6 @@
 //! Each tick provides an immutable snapshot of the state as `WorldSnapshot`.
 
 use std::{
-    ops::Not as _,
     panic::AssertUnwindSafe,
     time::{Duration, Instant},
 };
@@ -32,7 +31,7 @@ use triomphe::Arc;
 use vfs::{AbsPathBuf, AnchoredPathBuf, Vfs, VfsPath};
 
 use crate::{
-    config::{Config, ConfigChange, ConfigErrors},
+    config::{Config, ConfigChange},
     diagnostics::{CheckFixes, DiagnosticCollection},
     discover,
     flycheck::{FlycheckHandle, FlycheckMessage},
@@ -90,7 +89,6 @@ pub(crate) struct GlobalState {
     pub(crate) cancellation_pool: thread::Pool,
 
     pub(crate) config: Arc<Config>,
-    pub(crate) config_errors: Option<ConfigErrors>,
     pub(crate) analysis_host: AnalysisHost,
     pub(crate) diagnostics: DiagnosticCollection,
     pub(crate) mem_docs: MemDocs,
@@ -274,7 +272,6 @@ impl GlobalState {
             },
             source_root_config: SourceRootConfig::default(),
             local_roots_parent_map: Arc::new(FxHashMap::default()),
-            config_errors: Default::default(),
 
             proc_macro_clients: Arc::from_iter([]),
 
@@ -432,8 +429,7 @@ impl GlobalState {
                 change
             };
 
-            let (config, e, should_update) = self.config.apply_change(config_change);
-            self.config_errors = e.is_empty().not().then_some(e);
+            let (config, should_update) = self.config.apply_change(config_change);
 
             if should_update {
                 self.update_configuration(config);

@@ -17,7 +17,7 @@ use lsp_server::Connection;
 use paths::Utf8PathBuf;
 use rust_analyzer::{
     cli::flags,
-    config::{Config, ConfigChange, ConfigErrors},
+    config::{Config, ConfigChange},
     from_json,
 };
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
@@ -264,20 +264,7 @@ fn run_server() -> anyhow::Result<()> {
         let mut change = ConfigChange::default();
         change.change_client_config(json);
 
-        let error_sink: ConfigErrors;
-        (config, error_sink, _) = config.apply_change(change);
-
-        if !error_sink.is_empty() {
-            use lsp_types::{
-                MessageType, ShowMessageParams,
-                notification::{Notification, ShowMessage},
-            };
-            let not = lsp_server::Notification::new(
-                ShowMessage::METHOD.to_owned(),
-                ShowMessageParams { typ: MessageType::WARNING, message: error_sink.to_string() },
-            );
-            connection.sender.send(lsp_server::Message::Notification(not)).unwrap();
-        }
+        (config, _) = config.apply_change(change);
     }
 
     let server_capabilities = rust_analyzer::server_capabilities(&config);

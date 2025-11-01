@@ -1,10 +1,7 @@
 //! This module is responsible for implementing handlers for Language Server
 //! Protocol. This module specifically handles notifications.
 
-use std::{
-    ops::{Deref, Not as _},
-    panic::UnwindSafe,
-};
+use std::{ops::Deref, panic::UnwindSafe};
 
 use itertools::Itertools;
 use lsp_types::{
@@ -222,8 +219,7 @@ pub(crate) fn handle_did_change_configuration(
                         let mut change = ConfigChange::default();
                         change.change_client_config(json.take());
 
-                        let (config, e, _) = config.apply_change(change);
-                        this.config_errors = e.is_empty().not().then_some(e);
+                        let (config, _) = config.apply_change(change);
 
                         // Client config changes necessitates .update_config method to be called.
                         this.update_configuration(config);

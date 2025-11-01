@@ -27,10 +27,7 @@ use project_model::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use semver::Version;
-use serde::{
-    Deserialize, Serialize,
-    de::{DeserializeOwned, Error},
-};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use stdx::format_to_acc;
 use triomphe::Arc;
 use vfs::{AbsPath, AbsPathBuf};
@@ -969,16 +966,10 @@ pub struct Config {
     default_config: &'static DefaultConfigData,
     /// Config node that obtains its initial value during the server initialization and
     /// by receiving a `lsp_types::notification::DidChangeConfiguration`.
-    client_config: (FullConfigInput, ConfigErrors),
+    client_config: FullConfigInput,
 
     /// Clone of the value that is stored inside a `GlobalState`.
     source_root_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
-
-    /// Use case : It is an error to have an empty value for `check_command`.
-    /// Since it is a `global` command at the moment, its final value can only be determined by
-    /// traversing through `global` configs and the `client` config. However the non-null value constraint
-    /// is config level agnostic, so this requires an independent error storage
-    validation_errors: ConfigErrors,
 
     detached_files: Vec<AbsPathBuf>,
 }
@@ -995,7 +986,6 @@ impl fmt::Debug for Config {
             .field("client_info", &self.client_info)
             .field("client_config", &self.client_config)
             .field("source_root_parent_map", &self.source_root_parent_map)
-            .field("validation_errors", &self.validation_errors)
             .field("detached_files", &self.detached_files)
             .finish()
     }
@@ -1023,8 +1013,6 @@ impl Config {
     /// The return tuple's bool component signals whether the `GlobalState` should call its `update_configuration()` method.
     fn apply_change_with_sink(&self, change: ConfigChange) -> (Config, bool) {
         let mut config = self.clone();
-        config.validation_errors = ConfigErrors::default();
-
         let mut should_update = false;
 
         if let Some(mut json) = change.client_config_change {
@@ -1085,16 +1073,7 @@ impl Config {
                     }
                 }
 
-                config.client_config = (
-                    input,
-                    ConfigErrors(
-                        json_errors
-                            .into_iter()
-                            .map(|(a, b)| ConfigErrorInner::Json { config_key: a, error: b })
-                            .map(Arc::new)
-                            .collect(),
-                    ),
-                );
+                config.client_config = input;
                 config.detached_files = detached_files;
             }
             should_update = true;
@@ -1104,32 +1083,14 @@ impl Config {
             config.source_root_parent_map = source_root_map;
         }
 
-        if config.check_command().is_empty() {
-            config.validation_errors.0.push(Arc::new(ConfigErrorInner::Json {
-                config_key: "/check/command".to_owned(),
-                error: serde_json::Error::custom("expected a non-empty string"),
-            }));
-        }
-
         (config, should_update)
     }
 
     /// Given `change` this generates a new `Config`, thereby collecting errors of type `ConfigError`.
     /// If there are changes that have global/client level effect, the last component of the return type
     /// will be set to `true`, which should be used by the `GlobalState` to update itself.
-    pub fn apply_change(&self, change: ConfigChange) -> (Config, ConfigErrors, bool) {
-        let (config, should_update) = self.apply_change_with_sink(change);
-        let e = ConfigErrors(
-            config
-                .client_config
-                .1
-                .0
-                .iter()
-                .chain(config.validation_errors.0.iter())
-                .cloned()
-                .collect(),
-        );
-        (config, e, should_update)
+    pub fn apply_change(&self, change: ConfigChange) -> (Config, bool) {
+        self.apply_change_with_sink(change)
     }
 
     pub fn add_discovered_project_from_command(
@@ -1373,46 +1334,6 @@ pub struct ClientCommandsConfig {
     pub rename: bool,
 }
 
-#[derive(Debug)]
-pub enum ConfigErrorInner {
-    Json { config_key: String, error: serde_json::Error },
-    Toml { config_key: String, error: toml::de::Error },
-    ParseError { reason: String },
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ConfigErrors(Vec<Arc<ConfigErrorInner>>);
-
-impl ConfigErrors {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl fmt::Display for ConfigErrors {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let errors = self.0.iter().format_with("\n", |inner, f| {
-            match &**inner {
-                ConfigErrorInner::Json { config_key: key, error: e } => {
-                    f(key)?;
-                    f(&": ")?;
-                    f(e)
-                }
-                ConfigErrorInner::Toml { config_key: key, error: e } => {
-                    f(key)?;
-                    f(&": ")?;
-                    f(e)
-                }
-                ConfigErrorInner::ParseError { reason } => f(reason),
-            }?;
-            f(&";")
-        });
-        write!(f, "invalid config value{}:\n{}", if self.0.len() == 1 { "" } else { "s" }, errors)
-    }
-}
-
-impl std::error::Error for ConfigErrors {}
-
 impl Config {
     pub fn new(
         root_path: AbsPathBuf,
@@ -1433,11 +1354,10 @@ impl Config {
                 name: it.name,
                 version: it.version.as_deref().map(Version::parse).and_then(Result::ok),
             }),
-            client_config: (FullConfigInput::default(), ConfigErrors(vec![])),
+            client_config: FullConfigInput::default(),
             default_config: DEFAULT_CONFIG_DATA.get_or_init(|| Box::leak(Box::default())),
             source_root_parent_map: Arc::new(FxHashMap::default()),
             detached_files: Default::default(),
-            validation_errors: Default::default(),
         }
     }
 
@@ -2764,7 +2684,7 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.0.local.$field.as_ref() {
+                    if let Some(v) = self.client_config.local.$field.as_ref() {
                         return &v;
                     }
 
@@ -2783,7 +2703,7 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.0.workspace.$field.as_ref() {
+                    if let Some(v) = self.client_config.workspace.$field.as_ref() {
                         return &v;
                     }
 
@@ -2802,7 +2722,7 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.0.global.$field.as_ref() {
+                    if let Some(v) = self.client_config.global.$field.as_ref() {
                         return &v;
                     }
 
@@ -2821,7 +2741,7 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 $vis fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.0.client.$field.as_ref() {
+                    if let Some(v) = self.client_config.client.$field.as_ref() {
                         return &v;
                     }
 
@@ -3686,7 +3606,7 @@ mod tests {
                 "server": null,
         }}));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
         assert_eq!(config.proc_macro_srv(), None);
     }
 
@@ -3700,7 +3620,7 @@ mod tests {
             "server": project_root().to_string(),
         }}));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
         assert_eq!(config.proc_macro_srv(), Some(AbsPathBuf::assert(project_root())));
     }
 
@@ -3716,7 +3636,7 @@ mod tests {
             "server": "./server"
         }}));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
 
         assert_eq!(
             config.proc_macro_srv(),
@@ -3735,7 +3655,7 @@ mod tests {
             "rust" : { "analyzerTargetDir" : null }
         }));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
         assert_eq!(config.cargo_targetDir(), &None);
         assert!(
             matches!(config.flycheck(), FlycheckConfig::CargoCommand { options, .. } if options.target_dir.is_none())
@@ -3752,7 +3672,7 @@ mod tests {
             "rust" : { "analyzerTargetDir" : true }
         }));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
 
         assert_eq!(config.cargo_targetDir(), &Some(TargetDirectory::UseSubdirectory(true)));
         let target =
@@ -3772,7 +3692,7 @@ mod tests {
             "rust" : { "analyzerTargetDir" : "other_folder" }
         }));
 
-        (config, _, _) = config.apply_change(change);
+        (config, _) = config.apply_change(change);
 
         assert_eq!(
             config.cargo_targetDir(),
