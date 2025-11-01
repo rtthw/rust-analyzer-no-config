@@ -12,7 +12,7 @@ use cargo_metadata::PackageId;
 use crossbeam_channel::{Receiver, Sender, select_biased, unbounded};
 use ide_db::FxHashSet;
 use itertools::Itertools;
-use paths::{AbsPath, AbsPathBuf, Utf8Path, Utf8PathBuf};
+use paths::{AbsPathBuf, Utf8Path, Utf8PathBuf};
 use serde::Deserialize as _;
 use serde_derive::Deserialize;
 
@@ -79,30 +79,15 @@ impl CargoOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FlycheckConfig {
-    CargoCommand { command: String, options: CargoOptions, ansi_color_output: bool },
-    CustomCommand { command: String, args: Vec<String> },
+pub(crate) struct FlycheckConfig {
+    pub(crate) command: String,
+    pub(crate) options: CargoOptions,
+    pub(crate) ansi_color_output: bool,
 }
 
 impl fmt::Display for FlycheckConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FlycheckConfig::CargoCommand { command, .. } => write!(f, "cargo {command}"),
-            FlycheckConfig::CustomCommand { command, args, .. } => {
-                // Don't show `my_custom_check --foo $saved_file` literally to the user, as it
-                // looks like we've forgotten to substitute $saved_file.
-                //
-                // Instead, show `my_custom_check --foo ...`. The
-                // actual path is often too long to be worth showing
-                // in the IDE (e.g. in the VS Code status bar).
-                let display_args = args
-                    .iter()
-                    .map(|arg| if arg == SAVED_FILE_PLACEHOLDER { "..." } else { arg })
-                    .collect::<Vec<_>>();
-
-                write!(f, "{command} {}", display_args.join(" "))
-            }
-        }
+        write!(f, "cargo {}", self.command)
     }
 }
 
@@ -147,13 +132,12 @@ impl FlycheckHandle {
     }
 
     /// Schedule a re-start of the cargo check worker to do a workspace wide check.
-    pub(crate) fn restart_workspace(&self, saved_file: Option<AbsPathBuf>) {
+    pub(crate) fn restart_workspace(&self) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.sender
             .send(StateChange::Restart {
                 generation,
                 scope: FlycheckScope::Workspace,
-                saved_file,
                 target: None,
             })
             .unwrap();
@@ -171,7 +155,6 @@ impl FlycheckHandle {
             .send(StateChange::Restart {
                 generation,
                 scope: FlycheckScope::Package { package, workspace_deps },
-                saved_file: None,
                 target,
             })
             .unwrap();
@@ -266,12 +249,7 @@ enum FlycheckScope {
 }
 
 enum StateChange {
-    Restart {
-        generation: DiagnosticsGeneration,
-        scope: FlycheckScope,
-        saved_file: Option<AbsPathBuf>,
-        target: Option<Target>,
-    },
+    Restart { generation: DiagnosticsGeneration, scope: FlycheckScope, target: Option<Target> },
     Cancel,
 }
 
@@ -313,8 +291,6 @@ enum Event {
     RequestStateChange(StateChange),
     CheckEvent(Option<CargoCheckMessage>),
 }
-
-pub(crate) const SAVED_FILE_PLACEHOLDER: &str = "$saved_file";
 
 impl FlycheckActor {
     fn new(
@@ -366,12 +342,7 @@ impl FlycheckActor {
                     tracing::debug!(flycheck_id = self.id, "flycheck cancelled");
                     self.cancel_check_process();
                 }
-                Event::RequestStateChange(StateChange::Restart {
-                    generation,
-                    scope,
-                    saved_file,
-                    target,
-                }) => {
+                Event::RequestStateChange(StateChange::Restart { generation, scope, target }) => {
                     // Cancel the previously spawned process
                     self.cancel_check_process();
                     while let Ok(restart) = inbox.recv_timeout(Duration::from_millis(50)) {
@@ -381,7 +352,7 @@ impl FlycheckActor {
                         }
                     }
 
-                    let command = self.check_command(&scope, saved_file.as_deref(), target);
+                    let command = self.check_command(&scope, target);
                     self.scope = scope;
                     self.generation = generation;
 
@@ -397,18 +368,14 @@ impl FlycheckActor {
                         command,
                         CargoCheckParser,
                         sender,
-                        match &self.config {
-                            FlycheckConfig::CargoCommand { options, .. } => Some(
-                                options
-                                    .target_dir
-                                    .as_deref()
-                                    .unwrap_or(
-                                        Utf8Path::new("target").join("rust-analyzer").as_path(),
-                                    )
-                                    .join(format!("flycheck{}", self.id)),
-                            ),
-                            _ => None,
-                        },
+                        Some(
+                            self.config
+                                .options
+                                .target_dir
+                                .as_deref()
+                                .unwrap_or(Utf8Path::new("target").join("rust-analyzer").as_path())
+                                .join(format!("flycheck{}", self.id)),
+                        ),
                     ) {
                         Ok(command_handle) => {
                             tracing::debug!(command = formatted_command, "did restart flycheck");
@@ -592,90 +559,50 @@ impl FlycheckActor {
     /// Construct a `Command` object for checking the user's code. If the user
     /// has specified a custom command with placeholders that we cannot fill,
     /// return None.
-    fn check_command(
-        &self,
-        scope: &FlycheckScope,
-        saved_file: Option<&AbsPath>,
-        target: Option<Target>,
-    ) -> Option<Command> {
-        match &self.config {
-            FlycheckConfig::CargoCommand { command, options, ansi_color_output } => {
-                let mut cmd = toolchain::command(Tool::Cargo.path(), &*self.root);
-                if let Some(sysroot_root) = &self.sysroot_root
-                    // && !options.extra_env.contains_key("RUSTUP_TOOLCHAIN")
+    fn check_command(&self, scope: &FlycheckScope, target: Option<Target>) -> Option<Command> {
+        let mut cmd = toolchain::command(Tool::Cargo.path(), &*self.root);
+        if let Some(sysroot_root) = &self.sysroot_root
+                    // && !self.config.options.extra_env.contains_key("RUSTUP_TOOLCHAIN")
                     && std::env::var_os("RUSTUP_TOOLCHAIN").is_none()
-                {
-                    cmd.env("RUSTUP_TOOLCHAIN", AsRef::<std::path::Path>::as_ref(sysroot_root));
-                }
-                cmd.env("CARGO_LOG", "cargo::core::compiler::fingerprint=info");
-                cmd.arg(command);
+        {
+            cmd.env("RUSTUP_TOOLCHAIN", AsRef::<std::path::Path>::as_ref(sysroot_root));
+        }
+        cmd.env("CARGO_LOG", "cargo::core::compiler::fingerprint=info");
+        cmd.arg(&self.config.command);
 
-                match scope {
-                    FlycheckScope::Workspace => cmd.arg("--workspace"),
-                    FlycheckScope::Package { package, .. } => cmd.arg("-p").arg(&package.repr),
-                };
+        match scope {
+            FlycheckScope::Workspace => cmd.arg("--workspace"),
+            FlycheckScope::Package { package, .. } => cmd.arg("-p").arg(&package.repr),
+        };
 
-                if let Some(tgt) = target {
-                    match tgt {
-                        Target::Bin(tgt) => cmd.arg("--bin").arg(tgt),
-                        Target::Example(tgt) => cmd.arg("--example").arg(tgt),
-                        Target::Test(tgt) => cmd.arg("--test").arg(tgt),
-                        Target::Benchmark(tgt) => cmd.arg("--bench").arg(tgt),
-                    };
-                }
+        if let Some(tgt) = target {
+            match tgt {
+                Target::Bin(tgt) => cmd.arg("--bin").arg(tgt),
+                Target::Example(tgt) => cmd.arg("--example").arg(tgt),
+                Target::Test(tgt) => cmd.arg("--test").arg(tgt),
+                Target::Benchmark(tgt) => cmd.arg("--bench").arg(tgt),
+            };
+        }
 
-                cmd.arg(if *ansi_color_output {
-                    "--message-format=json-diagnostic-rendered-ansi"
-                } else {
-                    "--message-format=json"
-                });
+        cmd.arg(if self.config.ansi_color_output {
+            "--message-format=json-diagnostic-rendered-ansi"
+        } else {
+            "--message-format=json"
+        });
 
-                if let Some(manifest_path) = &self.manifest_path {
-                    cmd.arg("--manifest-path");
-                    cmd.arg(manifest_path);
-                    if manifest_path.extension() == Some("rs") {
-                        cmd.env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "nightly");
-                        cmd.arg("-Zscript");
-                    }
-                }
-
-                cmd.arg("--keep-going");
-
-                options.apply_on_command(&mut cmd);
-                Some(cmd)
-            }
-            FlycheckConfig::CustomCommand { command, args } => {
-                let root = {
-                    // FIXME: &affected_workspace
-                    &*self.root
-                };
-                let mut cmd = toolchain::command(command, root);
-
-                // If the custom command has a $saved_file placeholder, and
-                // we're saving a file, replace the placeholder in the arguments.
-                if let Some(saved_file) = saved_file {
-                    for arg in args {
-                        if arg == SAVED_FILE_PLACEHOLDER {
-                            cmd.arg(saved_file);
-                        } else {
-                            cmd.arg(arg);
-                        }
-                    }
-                } else {
-                    for arg in args {
-                        if arg == SAVED_FILE_PLACEHOLDER {
-                            // The custom command has a $saved_file placeholder,
-                            // but we had an IDE event that wasn't a file save. Do nothing.
-                            return None;
-                        }
-
-                        cmd.arg(arg);
-                    }
-                }
-
-                Some(cmd)
+        if let Some(manifest_path) = &self.manifest_path {
+            cmd.arg("--manifest-path");
+            cmd.arg(manifest_path);
+            if manifest_path.extension() == Some("rs") {
+                cmd.env("__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS", "nightly");
+                cmd.arg("-Zscript");
             }
         }
+
+        cmd.arg("--keep-going");
+
+        self.config.options.apply_on_command(&mut cmd);
+        Some(cmd)
     }
 
     #[track_caller]

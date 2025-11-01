@@ -405,7 +405,7 @@ impl GlobalState {
             // FIXME: ideally we should only trigger a workspace fetch for non-library changes
             // but something's going wrong with the source root business when we add a new local
             // crate see https://github.com/rust-lang/rust-analyzer/issues/13029
-            if let Some((path, force_crate_graph_reload)) = workspace_structure_change {
+            if let Some((_path, force_crate_graph_reload)) = workspace_structure_change {
                 let _p = span!(Level::INFO, "GlobalState::process_changes/ws_structure_change")
                     .entered();
                 self.enqueue_workspace_fetch(force_crate_graph_reload);
@@ -430,16 +430,16 @@ impl GlobalState {
         }
     }
 
-    pub(crate) fn send_request<R: lsp_types::request::Request>(
+    pub(crate) fn send_lsp_request<R: lsp_types::request::Request>(
         &mut self,
         params: R::Params,
         handler: ReqHandler,
     ) {
         let request = self.req_queue.outgoing.register(R::METHOD.to_owned(), params, handler);
-        self.send(request.into());
+        self.send_lsp_message(request.into());
     }
 
-    pub(crate) fn complete_request(&mut self, response: lsp_server::Response) {
+    pub(crate) fn complete_lsp_request(&mut self, response: lsp_server::Response) {
         let handler = self
             .req_queue
             .outgoing
@@ -448,15 +448,15 @@ impl GlobalState {
         handler(self, response)
     }
 
-    pub(crate) fn send_notification<N: lsp_types::notification::Notification>(
+    pub(crate) fn send_lsp_notification<N: lsp_types::notification::Notification>(
         &self,
         params: N::Params,
     ) {
         let not = lsp_server::Notification::new(N::METHOD.to_owned(), params);
-        self.send(not.into());
+        self.send_lsp_message(not.into());
     }
 
-    pub(crate) fn register_request(
+    pub(crate) fn register_lsp_request(
         &mut self,
         request: &lsp_server::Request,
         request_received: Instant,
@@ -466,7 +466,7 @@ impl GlobalState {
             .register(request.id.clone(), (request.method.clone(), request_received));
     }
 
-    pub(crate) fn respond(&mut self, response: lsp_server::Response) {
+    pub(crate) fn send_lsp_response(&mut self, response: lsp_server::Response) {
         if let Some((method, start)) = self.req_queue.incoming.complete(&response.id) {
             if let Some(err) = &response.error
                 && err.message.starts_with("server panicked")
@@ -476,22 +476,22 @@ impl GlobalState {
 
             let duration = start.elapsed();
             tracing::debug!(name: "message response", method, %response.id, duration = format_args!("{:0.2?}", duration));
-            self.send(response.into());
+            self.send_lsp_message(response.into());
         }
     }
 
-    pub(crate) fn cancel(&mut self, request_id: lsp_server::RequestId) {
+    pub(crate) fn cancel_lsp_request(&mut self, request_id: lsp_server::RequestId) {
         if let Some(response) = self.req_queue.incoming.cancel(request_id) {
-            self.send(response.into());
+            self.send_lsp_message(response.into());
         }
     }
 
-    pub(crate) fn is_completed(&self, request: &lsp_server::Request) -> bool {
+    pub(crate) fn is_lsp_request_completed(&self, request: &lsp_server::Request) -> bool {
         self.req_queue.incoming.is_completed(&request.id)
     }
 
     #[track_caller]
-    fn send(&self, message: lsp_server::Message) {
+    fn send_lsp_message(&self, message: lsp_server::Message) {
         self.sender.send(message).unwrap();
     }
 

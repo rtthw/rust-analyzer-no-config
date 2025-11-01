@@ -230,7 +230,7 @@ impl GlobalState {
             method: "textDocument/didSave".to_owned(),
             register_options: Some(serde_json::to_value(save_registration_options).unwrap()),
         };
-        self.send_request::<lsp_types::request::RegisterCapability>(
+        self.send_lsp_request::<lsp_types::request::RegisterCapability>(
             lsp_types::RegistrationParams { registrations: vec![registration] },
             |_, _| (),
         );
@@ -292,7 +292,7 @@ impl GlobalState {
             Event::Lsp(msg) => match msg {
                 lsp_server::Message::Request(req) => self.on_new_request(loop_start, req),
                 lsp_server::Message::Notification(not) => self.on_notification(not),
-                lsp_server::Message::Response(resp) => self.complete_request(resp),
+                lsp_server::Message::Response(resp) => self.complete_lsp_request(resp),
             },
             Event::QueuedTask(task) => {
                 let _p = tracing::info_span!("GlobalState::handle_event/queued_task").entered();
@@ -411,7 +411,7 @@ impl GlobalState {
             if became_quiescent {
                 if !self.fetch_build_data_queue.op_requested() {
                     // Project has loaded properly, kick off initial flycheck
-                    self.flycheck.iter().for_each(|flycheck| flycheck.restart_workspace(None));
+                    self.flycheck.iter().for_each(|flycheck| flycheck.restart_workspace());
                 }
                 self.prime_caches_queue.request_op("became quiescent".to_owned(), ());
             }
@@ -421,21 +421,27 @@ impl GlobalState {
                 // Refresh semantic tokens if the client supports it.
                 if self.config.semantic_tokens_refresh() {
                     self.semantic_tokens_cache.lock().clear();
-                    self.send_request::<lsp_types::request::SemanticTokensRefresh>((), |_, _| ());
+                    self.send_lsp_request::<lsp_types::request::SemanticTokensRefresh>(
+                        (),
+                        |_, _| (),
+                    );
                 }
 
                 // Refresh code lens if the client supports it.
                 if self.config.code_lens_refresh() {
-                    self.send_request::<lsp_types::request::CodeLensRefresh>((), |_, _| ());
+                    self.send_lsp_request::<lsp_types::request::CodeLensRefresh>((), |_, _| ());
                 }
 
                 // Refresh inlay hints if the client supports it.
                 if self.config.inlay_hints_refresh() {
-                    self.send_request::<lsp_types::request::InlayHintRefreshRequest>((), |_, _| ());
+                    self.send_lsp_request::<lsp_types::request::InlayHintRefreshRequest>(
+                        (),
+                        |_, _| (),
+                    );
                 }
 
                 if self.config.diagnostics_refresh() {
-                    self.send_request::<lsp_types::request::WorkspaceDiagnosticRefresh>(
+                    self.send_lsp_request::<lsp_types::request::WorkspaceDiagnosticRefresh>(
                         (),
                         |_, _| (),
                     );
@@ -656,7 +662,7 @@ impl GlobalState {
             self.last_reported_status = status.clone();
 
             if self.config.server_status_notification() {
-                self.send_notification::<lsp_ext::ServerStatusNotification>(status);
+                self.send_lsp_notification::<lsp_ext::ServerStatusNotification>(status);
             } else if let (
                 health @ (lsp_ext::Health::Warning | lsp_ext::Health::Error),
                 Some(message),
@@ -680,9 +686,9 @@ impl GlobalState {
 
     fn handle_task(&mut self, prime_caches_progress: &mut Vec<PrimeCachesProgress>, task: Task) {
         match task {
-            Task::Response(response) => self.respond(response),
+            Task::Response(response) => self.send_lsp_response(response),
             // Only retry requests that haven't been cancelled. Otherwise we do unnecessary work.
-            Task::Retry(req) if !self.is_completed(&req) => self.on_request(req),
+            Task::Retry(req) if !self.is_lsp_request_completed(&req) => self.on_request(req),
             Task::Retry(_) => (),
             Task::Diagnostics(kind) => {
                 self.diagnostics.set_native_diagnostics(kind);
@@ -759,7 +765,7 @@ impl GlobalState {
             }
             Task::BuildDepsHaveChanged => self.build_deps_changed = true,
             Task::DiscoverTest(tests) => {
-                self.send_notification::<lsp_ext::DiscoveredTests>(tests);
+                self.send_lsp_notification::<lsp_ext::DiscoveredTests>(tests);
             }
         }
     }
@@ -889,7 +895,7 @@ impl GlobalState {
                 // The notification requires the namespace form (with underscores) of the target
                 let test_id = format!("{}::{name}", message.target.target.replace('-', "_"));
 
-                self.send_notification::<lsp_ext::ChangeTestState>(
+                self.send_lsp_notification::<lsp_ext::ChangeTestState>(
                     lsp_ext::ChangeTestStateParams { test_id, state },
                 );
             }
@@ -897,12 +903,12 @@ impl GlobalState {
             CargoTestOutput::Finished => {
                 self.test_run_remaining_jobs = self.test_run_remaining_jobs.saturating_sub(1);
                 if self.test_run_remaining_jobs == 0 {
-                    self.send_notification::<lsp_ext::EndRunTest>(());
+                    self.send_lsp_notification::<lsp_ext::EndRunTest>(());
                     self.test_run_session = None;
                 }
             }
             CargoTestOutput::Custom { text } => {
-                self.send_notification::<lsp_ext::AppendOutputToRunTest>(text);
+                self.send_lsp_notification::<lsp_ext::AppendOutputToRunTest>(text);
             }
         }
     }
@@ -1000,7 +1006,7 @@ impl GlobalState {
     fn on_new_request(&mut self, request_received: Instant, req: Request) {
         let _p =
             span!(Level::INFO, "GlobalState::on_new_request", req.method = ?req.method).entered();
-        self.register_request(&req, request_received);
+        self.register_lsp_request(&req, request_received);
         self.on_request(req);
     }
 
@@ -1014,7 +1020,7 @@ impl GlobalState {
 
         match &mut dispatcher {
             RequestDispatcher { req: Some(req), global_state: this } if this.shutdown_requested => {
-                this.respond(lsp_server::Response::new_err(
+                this.send_lsp_response(lsp_server::Response::new_err(
                     req.id.clone(),
                     lsp_server::ErrorCode::InvalidRequest as i32,
                     "Shutdown already requested.".to_owned(),

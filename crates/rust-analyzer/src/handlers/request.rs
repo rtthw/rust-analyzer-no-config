@@ -250,7 +250,7 @@ pub(crate) fn handle_run_test(
     params: lsp_ext::RunTestParams,
 ) -> anyhow::Result<()> {
     if let Some(_session) = state.test_run_session.take() {
-        state.send_notification::<lsp_ext::EndRunTest>(());
+        state.send_lsp_notification::<lsp_ext::EndRunTest>(());
     }
 
     let mut handles = vec![];

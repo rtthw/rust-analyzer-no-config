@@ -28,7 +28,7 @@ pub(crate) fn handle_cancel(state: &mut GlobalState, params: CancelParams) -> an
         lsp_types::NumberOrString::Number(id) => id.into(),
         lsp_types::NumberOrString::String(id) => id.into(),
     };
-    state.cancel(id);
+    state.cancel_lsp_request(id);
     Ok(())
 }
 
@@ -172,7 +172,7 @@ pub(crate) fn handle_did_save_text_document(
     } else {
         // No specific flycheck was triggered, so let's trigger all of them.
         for flycheck in state.flycheck.iter() {
-            flycheck.restart_workspace(None);
+            flycheck.restart_workspace();
         }
     }
 
@@ -336,14 +336,13 @@ fn run_flycheck(state: &mut GlobalState, vfs_path: VfsPath) -> bool {
                     ws_contains_file && !is_pkg_ws
                 });
 
-                let saved_file = vfs_path.as_path().map(ToOwned::to_owned);
                 let mut workspace_check_triggered = false;
                 // Find and trigger corresponding flychecks
                 'flychecks: for flycheck in world.flycheck.iter() {
                     for (id, _) in workspace_ids.clone() {
                         if id == flycheck.id() {
                             workspace_check_triggered = true;
-                            flycheck.restart_workspace(saved_file.clone());
+                            flycheck.restart_workspace();
                             continue 'flychecks;
                         }
                     }
@@ -352,7 +351,7 @@ fn run_flycheck(state: &mut GlobalState, vfs_path: VfsPath) -> bool {
                 // No specific flycheck was triggered, so let's trigger all of them.
                 if !workspace_check_triggered && package_workspace_idx.is_none() {
                     for flycheck in world.flycheck.iter() {
-                        flycheck.restart_workspace(saved_file.clone());
+                        flycheck.restart_workspace();
                     }
                 }
                 Ok(())
@@ -394,14 +393,14 @@ pub(crate) fn handle_run_flycheck(
     }
     // No specific flycheck was triggered, so let's trigger all of them.
     for flycheck in state.flycheck.iter() {
-        flycheck.restart_workspace(None);
+        flycheck.restart_workspace();
     }
     Ok(())
 }
 
 pub(crate) fn handle_abort_run_test(state: &mut GlobalState, _: ()) -> anyhow::Result<()> {
     if state.test_run_session.take().is_some() {
-        state.send_notification::<lsp_ext::EndRunTest>(());
+        state.send_lsp_notification::<lsp_ext::EndRunTest>(());
     }
     Ok(())
 }

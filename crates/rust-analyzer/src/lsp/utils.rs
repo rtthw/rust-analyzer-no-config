@@ -44,7 +44,7 @@ impl GlobalState {
         show_open_log_button: bool,
     ) {
         match self.config.open_server_logs() && show_open_log_button  {
-            true => self.send_request::<lsp_types::request::ShowMessageRequest>(
+            true => self.send_lsp_request::<lsp_types::request::ShowMessageRequest>(
                 lsp_types::ShowMessageRequestParams {
                     typ,
                     message,
@@ -61,11 +61,11 @@ impl GlobalState {
                     >(
                         lsp_types::request::ShowMessageRequest::METHOD, &result
                     ) {
-                        this.send_notification::<lsp_ext::OpenServerLogs>(());
+                        this.send_lsp_notification::<lsp_ext::OpenServerLogs>(());
                     }
                 },
             ),
-            false => self.send_notification::<lsp_types::notification::ShowMessage>(
+            false => self.send_lsp_notification::<lsp_types::notification::ShowMessage>(
                 lsp_types::ShowMessageParams {
                     typ,
                     message,
@@ -88,7 +88,7 @@ impl GlobalState {
             }
             None => {
                 tracing::error!("{message}");
-                self.send_notification::<lsp_types::notification::ShowMessage>(
+                self.send_lsp_notification::<lsp_types::notification::ShowMessage>(
                     lsp_types::ShowMessageParams { typ: lsp_types::MessageType::ERROR, message },
                 );
             }
@@ -135,7 +135,7 @@ impl GlobalState {
         tracing::debug!(?token, ?state, "report_progress {message:?}");
         let work_done_progress = match state {
             Progress::Begin => {
-                self.send_request::<lsp_types::request::WorkDoneProgressCreate>(
+                self.send_lsp_request::<lsp_types::request::WorkDoneProgressCreate>(
                     lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
                     |_, _| (),
                 );
@@ -158,10 +158,12 @@ impl GlobalState {
                 lsp_types::WorkDoneProgress::End(lsp_types::WorkDoneProgressEnd { message })
             }
         };
-        self.send_notification::<lsp_types::notification::Progress>(lsp_types::ProgressParams {
-            token,
-            value: lsp_types::ProgressParamsValue::WorkDone(work_done_progress),
-        });
+        self.send_lsp_notification::<lsp_types::notification::Progress>(
+            lsp_types::ProgressParams {
+                token,
+                value: lsp_types::ProgressParamsValue::WorkDone(work_done_progress),
+            },
+        );
     }
 }
 

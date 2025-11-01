@@ -63,7 +63,7 @@ impl RequestDispatcher<'_> {
             f(self.global_state, params)
         };
         if let Ok(response) = result_to_response::<R>(req.id, result) {
-            self.global_state.respond(response);
+            self.global_state.send_lsp_response(response);
         }
 
         self
@@ -94,7 +94,7 @@ impl RequestDispatcher<'_> {
         });
 
         if let Ok(response) = thread_result_to_response::<R>(req.id, result) {
-            self.global_state.respond(response);
+            self.global_state.send_lsp_response(response);
         }
 
         self
@@ -116,7 +116,8 @@ impl RequestDispatcher<'_> {
             if let Some(lsp_server::Request { id, .. }) =
                 self.req.take_if(|it| it.method == R::METHOD)
             {
-                self.global_state.respond(lsp_server::Response::new_ok(id, R::Result::default()));
+                self.global_state
+                    .send_lsp_response(lsp_server::Response::new_ok(id, R::Result::default()));
             }
             return self;
         }
@@ -145,7 +146,7 @@ impl RequestDispatcher<'_> {
             if let Some(lsp_server::Request { id, .. }) =
                 self.req.take_if(|it| it.method == R::METHOD)
             {
-                self.global_state.respond(lsp_server::Response::new_ok(id, default()));
+                self.global_state.send_lsp_response(lsp_server::Response::new_ok(id, default()));
             }
             return self;
         }
@@ -164,7 +165,8 @@ impl RequestDispatcher<'_> {
     {
         if !self.global_state.vfs_done {
             if let Some((request, params, _)) = self.parse::<R>() {
-                self.global_state.respond(lsp_server::Response::new_ok(request.id, &params))
+                self.global_state
+                    .send_lsp_response(lsp_server::Response::new_ok(request.id, &params))
             }
             return self;
         }
@@ -191,7 +193,8 @@ impl RequestDispatcher<'_> {
             if let Some(lsp_server::Request { id, .. }) =
                 self.req.take_if(|it| it.method == R::METHOD)
             {
-                self.global_state.respond(lsp_server::Response::new_ok(id, R::Result::default()));
+                self.global_state
+                    .send_lsp_response(lsp_server::Response::new_ok(id, R::Result::default()));
             }
             return self;
         }
@@ -229,7 +232,7 @@ impl RequestDispatcher<'_> {
                 lsp_server::ErrorCode::MethodNotFound as i32,
                 "unknown request".to_owned(),
             );
-            self.global_state.respond(response);
+            self.global_state.send_lsp_response(response);
         }
     }
 
@@ -295,7 +298,7 @@ impl RequestDispatcher<'_> {
                     lsp_server::ErrorCode::InvalidParams as i32,
                     err.to_string(),
                 );
-                self.global_state.respond(response);
+                self.global_state.send_lsp_response(response);
                 None
             }
         }

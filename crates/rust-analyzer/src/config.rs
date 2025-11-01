@@ -44,14 +44,6 @@ use crate::{
 //  - Don't use abbreviations unless really necessary
 //  - foo_command = overrides the subcommand, foo_overrideCommand allows full overwriting, extra args only applies for foo_command
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum MaxSubstitutionLength {
-    Hide,
-    #[serde(untagged)]
-    Limit(usize),
-}
-
 #[derive(Clone, Debug)]
 struct ClientInfo {
     name: String,
@@ -608,10 +600,6 @@ impl Config {
         }
     }
 
-    pub fn discover_workspace_config(&self) -> Option<&DiscoverWorkspaceConfig> {
-        None
-    }
-
     fn discovered_projects(&self) -> Vec<ManifestOrProjectJson> {
         let mut projects = vec![];
         for fs_proj in &self.discovered_projects_from_filesystem {
@@ -750,7 +738,7 @@ impl Config {
     }
 
     pub(crate) fn flycheck(&self) -> FlycheckConfig {
-        FlycheckConfig::CargoCommand {
+        FlycheckConfig {
             command: "check".to_string(),
             options: CargoOptions {
                 target_tuples: Vec::new(),

@@ -31,7 +31,7 @@ use vfs::{AbsPath, ChangeKind};
 
 use crate::{
     config::{Config, FilesWatcher, LinkedProject},
-    flycheck::{FlycheckConfig, FlycheckHandle},
+    flycheck::FlycheckHandle,
     global_state::{
         FetchBuildDataResponse, FetchWorkspaceRequest, FetchWorkspaceResponse, GlobalState,
     },
@@ -98,15 +98,10 @@ impl GlobalState {
             self.reload_flycheck();
         }
 
-        if self.analysis_host.raw_database().expand_proc_attr_macros() != true {
+        if !self.analysis_host.raw_database().expand_proc_attr_macros() {
             self.analysis_host
                 .raw_database_mut()
                 .set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
-        }
-
-        if self.config.cargo() != old_config.cargo() {
-            let req = FetchWorkspaceRequest { force_crate_graph_reload: false };
-            self.fetch_workspaces_queue.request_op("cargo config changed".to_owned(), req)
         }
     }
 
@@ -117,15 +112,6 @@ impl GlobalState {
             message: None,
         };
         let mut message = String::new();
-
-        // if !self.config.cargo_autoreload_config()
-        //     && self.is_quiescent()
-        //     && self.fetch_workspaces_queue.op_requested()
-        //     && self.config.discover_workspace_config().is_none()
-        // {
-        //     status.health |= lsp_ext::Health::Warning;
-        //     message.push_str("Auto-reloading is disabled and the workspace has changed, a manual workspace reload is required.\n\n");
-        // }
 
         if self.build_deps_changed {
             status.health |= lsp_ext::Health::Warning;
@@ -462,7 +448,7 @@ impl GlobalState {
             // FIXME: can we abort the build scripts here if they are already running?
             self.workspaces = Arc::new(workspaces);
             self.check_workspaces_msrv().for_each(|message| {
-                self.send_notification::<lsp_types::notification::ShowMessage>(
+                self.send_lsp_notification::<lsp_types::notification::ShowMessage>(
                     lsp_types::ShowMessageParams { typ: lsp_types::MessageType::WARNING, message },
                 );
             });
@@ -548,7 +534,7 @@ impl GlobalState {
                 method: "workspace/didChangeWatchedFiles".to_owned(),
                 register_options: Some(serde_json::to_value(registration_options).unwrap()),
             };
-            self.send_request::<lsp_types::request::RegisterCapability>(
+            self.send_lsp_request::<lsp_types::request::RegisterCapability>(
                 lsp_types::RegistrationParams { registrations: vec![registration] },
                 |_, _| (),
             );
@@ -750,15 +736,8 @@ impl GlobalState {
                         | ProjectWorkspaceKind::DetachedFile {
                             cargo: Some((cargo, _, _)), ..
                         } => (cargo.workspace_root(), Some(cargo.manifest_path())),
-                        ProjectWorkspaceKind::Json(project) => {
-                            // Enable flychecks for json projects if a custom flycheck command was supplied
-                            // in the workspace configuration.
-                            match config {
-                                FlycheckConfig::CustomCommand { .. } => (project.path(), None),
-                                _ => return None,
-                            }
-                        }
-                        ProjectWorkspaceKind::DetachedFile { .. } => return None,
+                        ProjectWorkspaceKind::Json(_)
+                        | ProjectWorkspaceKind::DetachedFile { .. } => return None,
                     },
                     ws.sysroot.root().map(ToOwned::to_owned),
                 ))
@@ -841,5 +820,6 @@ pub(crate) fn should_refresh_for_change(path: &AbsPath, change_kind: ChangeKind)
             return true;
         }
     }
+
     false
 }
